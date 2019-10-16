@@ -164,6 +164,15 @@ public class CellHandler extends ContextHandler
 
 			@SuppressWarnings( "unchecked" )
 			final short[] data = ( ( VolatileCell< VolatileShortArray > ) cell ).getData().getCurrentStorageArray();
+
+			/*
+			* NOTE(Moravec): This is possible place, where to compress data. Image data are inside data array, but we access only part of the image.
+			* if (compressionEnabled)
+			* {
+			* 	data = compress(data);
+			* }
+			* */
+
 			final byte[] buf = new byte[ 2 * data.length ];
 			for ( int i = 0, j = 0; i < data.length; i++ )
 			{
