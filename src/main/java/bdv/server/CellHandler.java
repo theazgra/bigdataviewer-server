@@ -47,6 +47,8 @@ import net.imglib2.realtransform.AffineTransform3D;
 
 public class CellHandler extends ContextHandler
 {
+	private long transferedDataSize = 0;
+
 	private static final org.eclipse.jetty.util.log.Logger LOG = Log.getLogger( CellHandler.class );
 
 	private final VolatileGlobalCellCache cache;
@@ -169,6 +171,9 @@ public class CellHandler extends ContextHandler
 				buf[ j++ ] = ( byte ) ( ( s >> 8 ) & 0xff );
 				buf[ j++ ] = ( byte ) ( s & 0xff );
 			}
+
+			transferedDataSize += buf.length;
+			LOG.info(String.format("Total transfered data: [%d KB] [%d MB]", (transferedDataSize/1000), ((transferedDataSize/1000)/1000)));
 
 			response.setContentType( "application/octet-stream" );
 			response.setContentLength( buf.length );
