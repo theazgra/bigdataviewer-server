@@ -1,5 +1,7 @@
 package bdv.server;
 
+import compression.quantization.scalar.LloydMaxU16ScalarQuantization;
+import gnu.trove.impl.sync.TSynchronizedShortByteMap;
 import mpicbg.spim.data.SpimDataException;
 
 import org.apache.commons.cli.*;
@@ -49,11 +51,13 @@ import java.util.Map.Entry;
  * {@link Constants#ENABLE_EXPERIMENTAL_FEATURES} set to {@code true}.
  *
  * @author Tobias Pietzsch &lt;tobias.pietzsch@gmail.com&gt;
- * @author HongKee Moon &lt;moon@mpi-cbg.de&gt;
+ * @author HongKee Moon &lt;moon@mpi-cbg.quantization.de&gt;
  */
 public class BigDataServer
 {
 	private static final org.eclipse.jetty.util.log.Logger LOG = Log.getLogger( BigDataServer.class );
+
+	private static LloydMaxU16ScalarQuantization quantizer;
 
 	static Parameters getDefaultParameters()
 	{
@@ -69,7 +73,7 @@ public class BigDataServer
 		}
 		final String thumbnailDirectory = null;
 		final boolean enableManagerContext = false;
-		return new Parameters( port, hostname, new HashMap< String, String >(), thumbnailDirectory, enableManagerContext );
+		return new Parameters( port, hostname, new HashMap< String, String >(), thumbnailDirectory, enableManagerContext, CellHandler.DumpFile);
 	}
 
 	public static void main( final String[] args ) throws Exception
@@ -79,6 +83,8 @@ public class BigDataServer
 		final Parameters params = processOptions( args, getDefaultParameters() );
 		if ( params == null )
 			return;
+
+		CellHandler.DumpFile = params.getDumpFile();
 
 		final String thumbnailsDirectoryName = getThumbnailDirectoryPath( params );
 
@@ -92,6 +98,10 @@ public class BigDataServer
 		LOG.info( "Set connectors: " + connector );
 		server.setConnectors( new Connector[] { connector } );
 		final String baseURL = "http://" + server.getURI().getHost() + ":" + params.getPort();
+
+
+		quantizer = new LloydMaxU16ScalarQuantization("D:\\tmp\\server-dump\\initial_load.bin",8);
+		quantizer.train(true);
 
 		// Handler initialization
 		final HandlerCollection handlers = new HandlerCollection();
@@ -113,6 +123,8 @@ public class BigDataServer
 			statHandler.setHandler( handlers );
 			handler = statHandler;
 		}
+
+
 
 		LOG.info( "Set handler: " + handler );
 		server.setHandler( handler );
@@ -138,15 +150,18 @@ public class BigDataServer
 
 		private final String thumbnailDirectory;
 
+		private final String dumpFile;
+
 		private final boolean enableManagerContext;
 
-		Parameters( final int port, final String hostname, final Map< String, String > datasetNameToXml, final String thumbnailDirectory, final boolean enableManagerContext )
+		Parameters( final int port, final String hostname, final Map< String, String > datasetNameToXml, final String thumbnailDirectory, final boolean enableManagerContext, final String dumpFile)
 		{
 			this.port = port;
 			this.hostname = hostname;
 			this.datasetNameToXml = datasetNameToXml;
 			this.thumbnailDirectory = thumbnailDirectory;
 			this.enableManagerContext = enableManagerContext;
+			this.dumpFile = dumpFile;
 		}
 
 		public int getPort()
@@ -177,6 +192,10 @@ public class BigDataServer
 		public boolean enableManagerContext()
 		{
 			return enableManagerContext;
+		}
+
+		public String getDumpFile() {
+			return dumpFile;
 		}
 	}
 
@@ -217,6 +236,13 @@ public class BigDataServer
 				.withArgName( "DIRECTORY" )
 				.create( "t" ) );
 
+
+		options.addOption( OptionBuilder
+				.withDescription( "File in which to store data dump" )
+				.hasArg()
+				.withArgName( "DUMP" )
+				.create( "dump" ) );
+
 		if ( Constants.ENABLE_EXPERIMENTAL_FEATURES )
 		{
 			options.addOption( OptionBuilder
@@ -233,11 +259,15 @@ public class BigDataServer
 			final String portString = cmd.getOptionValue( "p", Integer.toString( defaultParameters.getPort() ) );
 			final int port = Integer.parseInt( portString );
 
+			final String dumpFile = cmd.getOptionValue("dump", defaultParameters.getDumpFile());
+
 			// Getting server name option
 			final String serverName = cmd.getOptionValue( "s", defaultParameters.getHostname() );
 
 			// Getting thumbnail directory option
 			final String thumbnailDirectory = cmd.getOptionValue( "t", defaultParameters.getThumbnailDirectory() );
+
+
 
 			final HashMap< String, String > datasets = new HashMap< String, String >( defaultParameters.getDatasets() );
 
@@ -294,7 +324,7 @@ public class BigDataServer
 			if ( datasets.isEmpty() )
 				throw new IllegalArgumentException( "Dataset list is empty." );
 
-			return new Parameters( port, serverName, datasets, thumbnailDirectory, enableManagerContext );
+			return new Parameters( port, serverName, datasets, thumbnailDirectory, enableManagerContext, dumpFile );
 		}
 		catch ( final ParseException | IllegalArgumentException e )
 		{
@@ -360,7 +390,7 @@ public class BigDataServer
 			final String name = entry.getKey();
 			final String xmlpath = entry.getValue();
 			final String context = "/" + name;
-			final CellHandler ctx = new CellHandler( baseURL + context + "/", xmlpath, name, thumbnailsDirectoryName );
+			final CellHandler ctx = new CellHandler( baseURL + context + "/", xmlpath, name, thumbnailsDirectoryName, quantizer );
 			ctx.setContextPath( context );
 			handlers.addHandler( ctx );
 		}

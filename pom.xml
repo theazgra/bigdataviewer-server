@@ -117,5 +117,11 @@
 			<artifactId>commons-cli</artifactId>
 			<version>${commons-cli.version}</version>
 		</dependency>
-	</dependencies>
+        <dependency>
+            <groupId>org.scijava</groupId>
+            <artifactId>DataCompressor</artifactId>
+            <version>1.0-SNAPSHOT</version>
+            <scope>compile</scope>
+        </dependency>
+    </dependencies>
 </project>

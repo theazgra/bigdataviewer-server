@@ -16,7 +16,7 @@ import java.net.URISyntaxException;
 /**
  * Provides a list of available datasets on this {@link BigDataServer}
  *
- * @author HongKee Moon &lt;moon@mpi-cbg.de&gt;
+ * @author HongKee Moon &lt;moon@mpi-cbg.quantization.de&gt;
  */
 public class JsonDatasetListHandler extends ContextHandler
 {

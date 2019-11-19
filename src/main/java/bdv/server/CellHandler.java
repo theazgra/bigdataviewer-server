@@ -1,11 +1,7 @@
 package bdv.server;
 
 import java.awt.image.BufferedImage;
-import java.io.File;
-import java.io.IOException;
-import java.io.OutputStream;
-import java.io.PrintWriter;
-import java.io.StringWriter;
+import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -14,6 +10,7 @@ import javax.imageio.ImageIO;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
+import compression.quantization.scalar.LloydMaxU16ScalarQuantization;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.handler.ContextHandler;
 import org.eclipse.jetty.util.log.Log;
@@ -51,6 +48,8 @@ public class CellHandler extends ContextHandler
 
 	private static final org.eclipse.jetty.util.log.Logger LOG = Log.getLogger( CellHandler.class );
 
+	public static String DumpFile = "";
+	private int counter = 0;
 	private final VolatileGlobalCellCache cache;
 
 	private final Hdf5VolatileShortArrayLoader loader;
@@ -93,12 +92,15 @@ public class CellHandler extends ContextHandler
 	 */
 	private final String thumbnailFilename;
 
-	public CellHandler( final String baseUrl, final String xmlFilename, final String datasetName, final String thumbnailsDirectory ) throws SpimDataException, IOException
+	private LloydMaxU16ScalarQuantization quantizer;
+
+	public CellHandler(final String baseUrl, final String xmlFilename, final String datasetName, final String thumbnailsDirectory, final LloydMaxU16ScalarQuantization quantizer) throws SpimDataException, IOException
 	{
 		final XmlIoSpimDataMinimal io = new XmlIoSpimDataMinimal();
 		final SpimDataMinimal spimData = io.load( xmlFilename );
 		final SequenceDescriptionMinimal seq = spimData.getSequenceDescription();
 		final Hdf5ImageLoader imgLoader = ( Hdf5ImageLoader ) seq.getImgLoader();
+		this.quantizer = quantizer;
 
 		cache = imgLoader.getCacheControl();
 		loader = imgLoader.getShortArrayLoader();
@@ -162,8 +164,12 @@ public class CellHandler extends ContextHandler
 				cell = cache.getLoadingVolatileCache().get( key, cacheHints, new VolatileCellLoader<>( loader, timepoint, setup, level, cellDims, cellMin ) );
 			}
 
+
 			@SuppressWarnings( "unchecked" )
-			final short[] data = ( ( VolatileCell< VolatileShortArray > ) cell ).getData().getCurrentStorageArray();
+			short[] data = ((VolatileCell<VolatileShortArray>) cell).getData().getCurrentStorageArray();
+			if (quantizer != null) {
+				data = quantizer.quantize(data);
+			}
 
 			/*
 			* NOTE(Moravec): This is possible place, where to compress data. Image data are inside data array, but we access only part of the image.
@@ -180,6 +186,15 @@ public class CellHandler extends ContextHandler
 				buf[ j++ ] = ( byte ) ( ( s >> 8 ) & 0xff );
 				buf[ j++ ] = ( byte ) ( s & 0xff );
 			}
+
+			if (!DumpFile.equals("")) {
+				//String requestLog = String.format("%s\\request_%d_%d.data", DumpFile, buf.length, counter++);
+				FileOutputStream dumpStream = new FileOutputStream(DumpFile, true);
+				dumpStream.write(buf);
+				dumpStream.flush();
+				dumpStream.close();
+			}
+
 
 			transferedDataSize += buf.length;
 			LOG.info(String.format("Total transfered data: [%d KB] [%d MB]", (transferedDataSize/1000), ((transferedDataSize/1000)/1000)));

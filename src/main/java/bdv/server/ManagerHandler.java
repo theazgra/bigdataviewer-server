@@ -24,7 +24,7 @@ import java.net.URISyntaxException;
 import java.text.DecimalFormat;
 
 /**
- * @author HongKee Moon &lt;moon@mpi-cbg.de&gt;
+ * @author HongKee Moon &lt;moon@mpi-cbg.quantization.de&gt;
  * @author Tobias Pietzsch &lt;tobias.pietzsch@gmail.com&gt;
  */
 public class ManagerHandler extends ContextHandler
@@ -175,7 +175,7 @@ public class ManagerHandler extends ContextHandler
 			CellHandler ctx = null;
 			try
 			{
-				ctx = new CellHandler( baseURL + context + "/", fileLocation, datasetName, thumbnailsDirectoryName );
+				ctx = new CellHandler( baseURL + context + "/", fileLocation, datasetName, thumbnailsDirectoryName, null );
 			}
 			catch ( final SpimDataException e )
 			{
