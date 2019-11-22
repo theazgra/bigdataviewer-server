@@ -10,7 +10,7 @@ import javax.imageio.ImageIO;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-import compression.quantization.scalar.LloydMaxU16ScalarQuantization;
+import compression.quantization.scalar.ScalarQuantizer;
 import compression.utilities.Utils;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.handler.ContextHandler;
@@ -91,11 +91,11 @@ public class CellHandler extends ContextHandler {
      */
     private final String thumbnailFilename;
     final CustomCompressionParameters compressionParams;
-    private LloydMaxU16ScalarQuantization quantizer;
+    private ScalarQuantizer quantizer;
 
     public CellHandler(final String baseUrl, final String xmlFilename, final String datasetName, final String thumbnailsDirectory,
                        final CustomCompressionParameters compressionParams,
-                       final LloydMaxU16ScalarQuantization quantizer) throws SpimDataException, IOException {
+                       final ScalarQuantizer quantizer) throws SpimDataException, IOException {
 
         final XmlIoSpimDataMinimal io = new XmlIoSpimDataMinimal();
         final SpimDataMinimal spimData = io.load(xmlFilename);
@@ -172,9 +172,9 @@ public class CellHandler extends ContextHandler {
 
                 for (int i = 0; i < data.length; i++) {
                     // Original - Compressed
-                    data[i] = Utils.u16BitsToShort(data[i]-compressedData[i]);
+                    //data[i] = Utils.u16BitsToShort(data[i]-compressedData[i]);
                     // Compressed - Original
-                    //data[i] = Utils.u16BitsToShort(compressedData[i]-data[i]);
+                    data[i] = Utils.u16BitsToShort(compressedData[i]-data[i]);
                 }
 
                 //LOG.warn("Not yet implemented.");
