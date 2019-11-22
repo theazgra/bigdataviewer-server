@@ -11,6 +11,7 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
 import compression.quantization.scalar.LloydMaxU16ScalarQuantization;
+import compression.utilities.Utils;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.handler.ContextHandler;
 import org.eclipse.jetty.util.log.Log;
@@ -42,309 +43,288 @@ import mpicbg.spim.data.SpimDataException;
 import net.imglib2.img.basictypeaccess.volatiles.array.VolatileShortArray;
 import net.imglib2.realtransform.AffineTransform3D;
 
-public class CellHandler extends ContextHandler
-{
-	private long transferedDataSize = 0;
+public class CellHandler extends ContextHandler {
+    private long transferedDataSize = 0;
 
-	private static final org.eclipse.jetty.util.log.Logger LOG = Log.getLogger( CellHandler.class );
+    private static final org.eclipse.jetty.util.log.Logger LOG = Log.getLogger(CellHandler.class);
 
-	public static String DumpFile = "";
-	private int counter = 0;
-	private final VolatileGlobalCellCache cache;
+    private int counter = 0;
+    private final VolatileGlobalCellCache cache;
 
-	private final Hdf5VolatileShortArrayLoader loader;
+    private final Hdf5VolatileShortArrayLoader loader;
 
-	private final CacheHints cacheHints;
+    private final CacheHints cacheHints;
 
-	/**
-	 * Full path of the dataset xml file this {@link CellHandler} is serving.
-	 */
-	private final String xmlFilename;
+    /**
+     * Full path of the dataset xml file this {@link CellHandler} is serving.
+     */
+    private final String xmlFilename;
 
-	/**
-	 * Full path of the dataset xml file this {@link CellHandler} is serving,
-	 * without the ".xml" suffix.
-	 */
-	private final String baseFilename;
+    /**
+     * Full path of the dataset xml file this {@link CellHandler} is serving,
+     * without the ".xml" suffix.
+     */
+    private final String baseFilename;
 
-	private final String dataSetURL;
+    private final String dataSetURL;
 
-	/**
-	 * Cached dataset XML to be send to and opened by {@link BigDataViewer}
-	 * clients.
-	 */
-	private final String datasetXmlString;
+    /**
+     * Cached dataset XML to be send to and opened by {@link BigDataViewer}
+     * clients.
+     */
+    private final String datasetXmlString;
 
-	/**
-	 * Cached JSON representation of the {@link RemoteImageLoaderMetaData} to be
-	 * send to clients.
-	 */
-	private final String metadataJson;
+    /**
+     * Cached JSON representation of the {@link RemoteImageLoaderMetaData} to be
+     * send to clients.
+     */
+    private final String metadataJson;
 
-	/**
-	 * Cached dataset.settings XML to be send to clients. May be null if no
-	 * settings file exists for the dataset.
-	 */
-	private final String settingsXmlString;
+    /**
+     * Cached dataset.settings XML to be send to clients. May be null if no
+     * settings file exists for the dataset.
+     */
+    private final String settingsXmlString;
 
-	/**
-	 * Full path to thumbnail png.
-	 */
-	private final String thumbnailFilename;
+    /**
+     * Full path to thumbnail png.
+     */
+    private final String thumbnailFilename;
+    final CustomCompressionParameters compressionParams;
+    private LloydMaxU16ScalarQuantization quantizer;
 
-	private LloydMaxU16ScalarQuantization quantizer;
+    public CellHandler(final String baseUrl, final String xmlFilename, final String datasetName, final String thumbnailsDirectory,
+                       final CustomCompressionParameters compressionParams,
+                       final LloydMaxU16ScalarQuantization quantizer) throws SpimDataException, IOException {
 
-	public CellHandler(final String baseUrl, final String xmlFilename, final String datasetName, final String thumbnailsDirectory, final LloydMaxU16ScalarQuantization quantizer) throws SpimDataException, IOException
-	{
-		final XmlIoSpimDataMinimal io = new XmlIoSpimDataMinimal();
-		final SpimDataMinimal spimData = io.load( xmlFilename );
-		final SequenceDescriptionMinimal seq = spimData.getSequenceDescription();
-		final Hdf5ImageLoader imgLoader = ( Hdf5ImageLoader ) seq.getImgLoader();
-		this.quantizer = quantizer;
+        final XmlIoSpimDataMinimal io = new XmlIoSpimDataMinimal();
+        final SpimDataMinimal spimData = io.load(xmlFilename);
+        final SequenceDescriptionMinimal seq = spimData.getSequenceDescription();
+        final Hdf5ImageLoader imgLoader = (Hdf5ImageLoader) seq.getImgLoader();
+        this.quantizer = quantizer;
+        this.compressionParams = compressionParams;
 
-		cache = imgLoader.getCacheControl();
-		loader = imgLoader.getShortArrayLoader();
-		cacheHints = new CacheHints( LoadingStrategy.BLOCKING, 0, false );
+        cache = imgLoader.getCacheControl();
+        loader = imgLoader.getShortArrayLoader();
+        cacheHints = new CacheHints(LoadingStrategy.BLOCKING, 0, false);
 
-		// dataSetURL property is used for providing the XML file by replace
-		// SequenceDescription>ImageLoader>baseUrl
-		this.xmlFilename = xmlFilename;
-		baseFilename = xmlFilename.endsWith( ".xml" ) ? xmlFilename.substring( 0, xmlFilename.length() - ".xml".length() ) : xmlFilename;
-		dataSetURL = baseUrl;
+        // dataSetURL property is used for providing the XML file by replace
+        // SequenceDescription>ImageLoader>baseUrl
+        this.xmlFilename = xmlFilename;
+        baseFilename = xmlFilename.endsWith(".xml") ? xmlFilename.substring(0, xmlFilename.length() - ".xml".length()) : xmlFilename;
+        dataSetURL = baseUrl;
 
-		datasetXmlString = buildRemoteDatasetXML( io, spimData, baseUrl );
-		metadataJson = buildMetadataJsonString( imgLoader, seq );
-		settingsXmlString = buildSettingsXML( baseFilename );
-		thumbnailFilename = createThumbnail( spimData, baseFilename, datasetName, thumbnailsDirectory );
-	}
+        datasetXmlString = buildRemoteDatasetXML(io, spimData, baseUrl);
+        metadataJson = buildMetadataJsonString(imgLoader, seq);
+        settingsXmlString = buildSettingsXML(baseFilename);
+        thumbnailFilename = createThumbnail(spimData, baseFilename, datasetName, thumbnailsDirectory);
+    }
 
-	@Override
-	public void doHandle( final String target, final Request baseRequest, final HttpServletRequest request, final HttpServletResponse response ) throws IOException
-	{
-		if ( target.equals( "/settings" ) )
-		{
-			if ( settingsXmlString != null )
-				respondWithString( baseRequest, response, "application/xml", settingsXmlString );
-			return;
-		}
+    @Override
+    public void doHandle(final String target, final Request baseRequest, final HttpServletRequest request, final HttpServletResponse response) throws IOException {
+        if (target.equals("/settings")) {
+            if (settingsXmlString != null)
+                respondWithString(baseRequest, response, "application/xml", settingsXmlString);
+            return;
+        }
 
-		if ( target.equals( "/png" ) )
-		{
-			provideThumbnail( baseRequest, response );
-			return;
-		}
+        if (target.equals("/png")) {
+            provideThumbnail(baseRequest, response);
+            return;
+        }
 
-		final String cellString = request.getParameter( "p" );
+        final String cellString = request.getParameter("p");
 
-		if ( cellString == null )
-		{
-			respondWithString( baseRequest, response, "application/xml", datasetXmlString );
-			return;
-		}
+        if (cellString == null) {
+            respondWithString(baseRequest, response, "application/xml", datasetXmlString);
+            return;
+        }
 
-		final String[] parts = cellString.split( "/" );
-		if ( parts[ 0 ].equals( "cell" ) )
-		{
-			final int index = Integer.parseInt( parts[ 1 ] );
-			final int timepoint = Integer.parseInt( parts[ 2 ] );
-			final int setup = Integer.parseInt( parts[ 3 ] );
-			final int level = Integer.parseInt( parts[ 4 ] );
-			final Key key = new VolatileGlobalCellCache.Key( timepoint, setup, level, index );
-			VolatileCell< ? > cell = cache.getLoadingVolatileCache().getIfPresent( key, cacheHints );
-			if ( cell == null )
-			{
-				final int[] cellDims = new int[] {
-						Integer.parseInt( parts[ 5 ] ),
-						Integer.parseInt( parts[ 6 ] ),
-						Integer.parseInt( parts[ 7 ] ) };
-				final long[] cellMin = new long[] {
-						Long.parseLong( parts[ 8 ] ),
-						Long.parseLong( parts[ 9 ] ),
-						Long.parseLong( parts[ 10 ] ) };
-				cell = cache.getLoadingVolatileCache().get( key, cacheHints, new VolatileCellLoader<>( loader, timepoint, setup, level, cellDims, cellMin ) );
-			}
+        final String[] parts = cellString.split("/");
+        if (parts[0].equals("cell")) {
+            final int index = Integer.parseInt(parts[1]);
+            final int timepoint = Integer.parseInt(parts[2]);
+            final int setup = Integer.parseInt(parts[3]);
+            final int level = Integer.parseInt(parts[4]);
+            final Key key = new VolatileGlobalCellCache.Key(timepoint, setup, level, index);
+            VolatileCell<?> cell = cache.getLoadingVolatileCache().getIfPresent(key, cacheHints);
+            if (cell == null) {
+                final int[] cellDims = new int[]{
+                        Integer.parseInt(parts[5]),
+                        Integer.parseInt(parts[6]),
+                        Integer.parseInt(parts[7])};
+                final long[] cellMin = new long[]{
+                        Long.parseLong(parts[8]),
+                        Long.parseLong(parts[9]),
+                        Long.parseLong(parts[10])};
+                cell = cache.getLoadingVolatileCache().get(key, cacheHints, new VolatileCellLoader<>(loader, timepoint, setup, level, cellDims, cellMin));
+            }
 
 
-			@SuppressWarnings( "unchecked" )
-			short[] data = ((VolatileCell<VolatileShortArray>) cell).getData().getCurrentStorageArray();
-			if (quantizer != null) {
-				data = quantizer.quantize(data);
-			}
+            @SuppressWarnings("unchecked")
+            short[] data = ((VolatileCell<VolatileShortArray>) cell).getData().getCurrentStorageArray();
+            if (compressionParams.shouldCompressData()) {
+                assert (quantizer != null) : "Compressor wasn't created";
+                data = quantizer.quantize(data);
+            } else if (compressionParams.renderDifference()) {
+                assert (quantizer != null) : "Compressor wasn't created";
+                short[] compressedData = quantizer.quantize(data);
 
-			/*
-			* NOTE(Moravec): This is possible place, where to compress data. Image data are inside data array, but we access only part of the image.
-			* if (compressionEnabled)
-			* {
-			* 	data = compress(data);
-			* }
-			* */
+                for (int i = 0; i < data.length; i++) {
+                    // Original - Compressed
+                    data[i] = Utils.u16BitsToShort(data[i]-compressedData[i]);
+                    // Compressed - Original
+                    //data[i] = Utils.u16BitsToShort(compressedData[i]-data[i]);
+                }
 
-			final byte[] buf = new byte[ 2 * data.length ];
-			for ( int i = 0, j = 0; i < data.length; i++ )
-			{
-				final short s = data[ i ];
-				buf[ j++ ] = ( byte ) ( ( s >> 8 ) & 0xff );
-				buf[ j++ ] = ( byte ) ( s & 0xff );
-			}
+                //LOG.warn("Not yet implemented.");
+            }
 
-			if (!DumpFile.equals("")) {
-				//String requestLog = String.format("%s\\request_%d_%d.data", DumpFile, buf.length, counter++);
-				FileOutputStream dumpStream = new FileOutputStream(DumpFile, true);
-				dumpStream.write(buf);
-				dumpStream.flush();
-				dumpStream.close();
-			}
+            final byte[] buf = new byte[2 * data.length];
+            for (int i = 0, j = 0; i < data.length; i++) {
+                final short s = data[i];
+                buf[j++] = (byte) ((s >> 8) & 0xff);
+                buf[j++] = (byte) (s & 0xff);
+            }
 
+            if (compressionParams.shouldDumpRequestData()) {
+                FileOutputStream dumpStream = new FileOutputStream(compressionParams.getDumpFile(), true);
+                dumpStream.write(buf);
+                dumpStream.flush();
+                dumpStream.close();
+            }
 
-			transferedDataSize += buf.length;
-			LOG.info(String.format("Total transfered data: [%d KB] [%d MB]", (transferedDataSize/1000), ((transferedDataSize/1000)/1000)));
+            transferedDataSize += buf.length;
 
-			response.setContentType( "application/octet-stream" );
-			response.setContentLength( buf.length );
-			response.setStatus( HttpServletResponse.SC_OK );
-			baseRequest.setHandled( true );
-			final OutputStream os = response.getOutputStream();
-			os.write( buf );
-			os.close();
-		}
-		else if ( parts[ 0 ].equals( "init" ) )
-		{
-			respondWithString( baseRequest, response, "application/json", metadataJson );
-		}
-	}
+            LOG.info(String.format("I:%d;T:%d;S:%d;L:%d  Total transfered data: [%d KB] [%d MB]",
+                    index, timepoint, setup, level,
+                    (transferedDataSize / 1000), ((transferedDataSize / 1000) / 1000)));
 
-	private void provideThumbnail( final Request baseRequest, final HttpServletResponse response ) throws IOException
-	{
-		final Path path = Paths.get( thumbnailFilename );
-		if ( Files.exists( path ) )
-		{
-			final byte[] imageData = Files.readAllBytes(path);
-			if ( imageData != null )
-			{
-				response.setContentType( "image/png" );
-				response.setContentLength( imageData.length );
-				response.setStatus( HttpServletResponse.SC_OK );
-				baseRequest.setHandled( true );
+            response.setContentType("application/octet-stream");
+            response.setContentLength(buf.length);
+            response.setStatus(HttpServletResponse.SC_OK);
+            baseRequest.setHandled(true);
+            final OutputStream os = response.getOutputStream();
+            os.write(buf);
+            os.close();
+        } else if (parts[0].equals("init")) {
+            respondWithString(baseRequest, response, "application/json", metadataJson);
+        }
+    }
 
-				final OutputStream os = response.getOutputStream();
-				os.write( imageData );
-				os.close();
-			}
-		}
-	}
+    private void provideThumbnail(final Request baseRequest, final HttpServletResponse response) throws IOException {
+        final Path path = Paths.get(thumbnailFilename);
+        if (Files.exists(path)) {
+            final byte[] imageData = Files.readAllBytes(path);
+            if (imageData != null) {
+                response.setContentType("image/png");
+                response.setContentLength(imageData.length);
+                response.setStatus(HttpServletResponse.SC_OK);
+                baseRequest.setHandled(true);
 
-	public String getXmlFile()
-	{
-		return xmlFilename;
-	}
+                final OutputStream os = response.getOutputStream();
+                os.write(imageData);
+                os.close();
+            }
+        }
+    }
 
-	public String getDataSetURL()
-	{
-		return dataSetURL;
-	}
+    public String getXmlFile() {
+        return xmlFilename;
+    }
 
-	public String getThumbnailUrl()
-	{
-		return dataSetURL + "png";
-	}
+    public String getDataSetURL() {
+        return dataSetURL;
+    }
 
-	public String getDescription()
-	{
-		throw new UnsupportedOperationException();
-	}
+    public String getThumbnailUrl() {
+        return dataSetURL + "png";
+    }
 
-	/**
-	 * Create a JSON representation of the {@link RemoteImageLoaderMetaData}
-	 * (image sizes and resolutions) provided by the given
-	 * {@link Hdf5ImageLoader}.
-	 */
-	private static String buildMetadataJsonString( final Hdf5ImageLoader imgLoader, final SequenceDescriptionMinimal seq )
-	{
-		final RemoteImageLoaderMetaData metadata = new RemoteImageLoaderMetaData( imgLoader, seq );
-		final GsonBuilder gsonBuilder = new GsonBuilder();
-		gsonBuilder.registerTypeAdapter( AffineTransform3D.class, new AffineTransform3DJsonSerializer() );
-		gsonBuilder.enableComplexMapKeySerialization();
-		return gsonBuilder.create().toJson( metadata );
-	}
+    public String getDescription() {
+        throw new UnsupportedOperationException();
+    }
 
-	/**
-	 * Create a modified dataset XML by replacing the ImageLoader with an
-	 * {@link RemoteImageLoader} pointing to the data we are serving.
-	 */
-	private static String buildRemoteDatasetXML( final XmlIoSpimDataMinimal io, final SpimDataMinimal spimData, final String baseUrl ) throws IOException, SpimDataException
-	{
-		final SpimDataMinimal s = new SpimDataMinimal( spimData, new RemoteImageLoader( baseUrl, false ) );
-		final Document doc = new Document( io.toXml( s, s.getBasePath() ) );
-		final XMLOutputter xout = new XMLOutputter( Format.getPrettyFormat() );
-		final StringWriter sw = new StringWriter();
-		xout.output( doc, sw );
-		return sw.toString();
-	}
+    /**
+     * Create a JSON representation of the {@link RemoteImageLoaderMetaData}
+     * (image sizes and resolutions) provided by the given
+     * {@link Hdf5ImageLoader}.
+     */
+    private static String buildMetadataJsonString(final Hdf5ImageLoader imgLoader, final SequenceDescriptionMinimal seq) {
+        final RemoteImageLoaderMetaData metadata = new RemoteImageLoaderMetaData(imgLoader, seq);
+        final GsonBuilder gsonBuilder = new GsonBuilder();
+        gsonBuilder.registerTypeAdapter(AffineTransform3D.class, new AffineTransform3DJsonSerializer());
+        gsonBuilder.enableComplexMapKeySerialization();
+        return gsonBuilder.create().toJson(metadata);
+    }
 
-	/**
-	 * Read {@code baseFilename.settings.xml} into a string if it exists.
-	 *
-	 * @return contents of {@code baseFilename.settings.xml} or {@code null} if
-	 *         that file couldn't be read.
-	 */
-	private static String buildSettingsXML( final String baseFilename )
-	{
-		final String settings = baseFilename + ".settings.xml";
-		if ( new File( settings ).exists() )
-		{
-			try
-			{
-				final SAXBuilder sax = new SAXBuilder();
-				final Document doc = sax.build( settings );
-				final XMLOutputter xout = new XMLOutputter( Format.getPrettyFormat() );
-				final StringWriter sw = new StringWriter();
-				xout.output( doc, sw );
-				return sw.toString();
-			}
-			catch ( JDOMException | IOException e )
-			{
-				LOG.warn( "Could not read settings file \"" + settings + "\"" );
-				LOG.warn( e.getMessage() );
-			}
-		}
-		return null;
-	}
+    /**
+     * Create a modified dataset XML by replacing the ImageLoader with an
+     * {@link RemoteImageLoader} pointing to the data we are serving.
+     */
+    private static String buildRemoteDatasetXML(final XmlIoSpimDataMinimal io, final SpimDataMinimal spimData, final String baseUrl) throws IOException, SpimDataException {
+        final SpimDataMinimal s = new SpimDataMinimal(spimData, new RemoteImageLoader(baseUrl, false));
+        final Document doc = new Document(io.toXml(s, s.getBasePath()));
+        final XMLOutputter xout = new XMLOutputter(Format.getPrettyFormat());
+        final StringWriter sw = new StringWriter();
+        xout.output(doc, sw);
+        return sw.toString();
+    }
 
-	/**
-	 * Create PNG thumbnail file named "{@code <baseFilename>.png}".
-	 */
-	private static String createThumbnail( final SpimDataMinimal spimData, final String baseFilename, final String datasetName, final String thumbnailsDirectory )
-	{
-		final String thumbnailFileName = thumbnailsDirectory + "/" + datasetName + ".png";
-		final File thumbnailFile = new File( thumbnailFileName );
-		if ( !thumbnailFile.isFile() ) // do not recreate thumbnail if it already exists
-		{
-			final BufferedImage bi = ThumbnailGenerator.makeThumbnail( spimData, baseFilename, Constants.THUMBNAIL_WIDTH, Constants.THUMBNAIL_HEIGHT );
-			try
-			{
-				ImageIO.write( bi, "png", thumbnailFile );
-			}
-			catch ( final IOException e )
-			{
-				LOG.warn( "Could not create thumbnail png for dataset \"" + baseFilename + "\"" );
-				LOG.warn( e.getMessage() );
-			}
-		}
-		return thumbnailFileName;
-	}
+    /**
+     * Read {@code baseFilename.settings.xml} into a string if it exists.
+     *
+     * @return contents of {@code baseFilename.settings.xml} or {@code null} if
+     * that file couldn't be read.
+     */
+    private static String buildSettingsXML(final String baseFilename) {
+        final String settings = baseFilename + ".settings.xml";
+        if (new File(settings).exists()) {
+            try {
+                final SAXBuilder sax = new SAXBuilder();
+                final Document doc = sax.build(settings);
+                final XMLOutputter xout = new XMLOutputter(Format.getPrettyFormat());
+                final StringWriter sw = new StringWriter();
+                xout.output(doc, sw);
+                return sw.toString();
+            } catch (JDOMException | IOException e) {
+                LOG.warn("Could not read settings file \"" + settings + "\"");
+                LOG.warn(e.getMessage());
+            }
+        }
+        return null;
+    }
 
-	/**
-	 * Handle request by sending a UTF-8 string.
-	 */
-	private static void respondWithString( final Request baseRequest, final HttpServletResponse response, final String contentType, final String string ) throws IOException
-	{
-		response.setContentType( contentType );
-		response.setCharacterEncoding( "UTF-8" );
-		response.setStatus( HttpServletResponse.SC_OK );
-		baseRequest.setHandled( true );
+    /**
+     * Create PNG thumbnail file named "{@code <baseFilename>.png}".
+     */
+    private static String createThumbnail(final SpimDataMinimal spimData, final String baseFilename, final String datasetName, final String thumbnailsDirectory) {
+        final String thumbnailFileName = thumbnailsDirectory + "/" + datasetName + ".png";
+        final File thumbnailFile = new File(thumbnailFileName);
+        if (!thumbnailFile.isFile()) // do not recreate thumbnail if it already exists
+        {
+            final BufferedImage bi = ThumbnailGenerator.makeThumbnail(spimData, baseFilename, Constants.THUMBNAIL_WIDTH, Constants.THUMBNAIL_HEIGHT);
+            try {
+                ImageIO.write(bi, "png", thumbnailFile);
+            } catch (final IOException e) {
+                LOG.warn("Could not create thumbnail png for dataset \"" + baseFilename + "\"");
+                LOG.warn(e.getMessage());
+            }
+        }
+        return thumbnailFileName;
+    }
 
-		final PrintWriter ow = response.getWriter();
-		ow.write( string );
-		ow.close();
-	}
+    /**
+     * Handle request by sending a UTF-8 string.
+     */
+    private static void respondWithString(final Request baseRequest, final HttpServletResponse response, final String contentType, final String string) throws IOException {
+        response.setContentType(contentType);
+        response.setCharacterEncoding("UTF-8");
+        response.setStatus(HttpServletResponse.SC_OK);
+        baseRequest.setHandled(true);
+
+        final PrintWriter ow = response.getWriter();
+        ow.write(string);
+        ow.close();
+    }
 }
