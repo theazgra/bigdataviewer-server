@@ -171,10 +171,14 @@ public class CellHandler extends ContextHandler {
                 short[] compressedData = quantizer.quantize(data);
 
                 for (int i = 0; i < data.length; i++) {
-                    // Original - Compressed
-                    //data[i] = Utils.u16BitsToShort(data[i]-compressedData[i]);
-                    // Compressed - Original
-                    data[i] = Utils.u16BitsToShort(compressedData[i]-data[i]);
+//                    final int diff = Math.abs(compressedData[i] - data[i]);
+//                    if (diff > 100) {
+//                        data[i] = 2000;
+//                    } else {
+//                        data[i] = 0;
+//                    }
+
+                    data[i] = (short) (5*Utils.u16BitsToShort(Math.abs(compressedData[i] - data[i])));
                 }
 
                 //LOG.warn("Not yet implemented.");
@@ -207,9 +211,12 @@ public class CellHandler extends ContextHandler {
             final OutputStream os = response.getOutputStream();
             os.write(buf);
             os.close();
-        } else if (parts[0].equals("init")) {
+        } else if (parts[0].
+
+                equals("init")) {
             respondWithString(baseRequest, response, "application/json", metadataJson);
         }
+
     }
 
     private void provideThumbnail(final Request baseRequest, final HttpServletResponse response) throws IOException {
