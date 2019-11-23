@@ -10,6 +10,7 @@ import javax.imageio.ImageIO;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
+import compression.U16;
 import compression.quantization.scalar.ScalarQuantizer;
 import compression.utilities.Utils;
 import org.eclipse.jetty.server.Request;
@@ -169,17 +170,36 @@ public class CellHandler extends ContextHandler {
             } else if (compressionParams.renderDifference()) {
                 assert (quantizer != null) : "Compressor wasn't created";
                 short[] compressedData = quantizer.quantize(data);
-
+                int e1 = 0, e2 = 0, e3 = 0, e4 = 0, e5 = 0;
                 for (int i = 0; i < data.length; i++) {
-//                    final int diff = Math.abs(compressedData[i] - data[i]);
-//                    if (diff > 100) {
-//                        data[i] = 2000;
-//                    } else {
-//                        data[i] = 0;
-//                    }
-
-                    data[i] = (short) (5*Utils.u16BitsToShort(Math.abs(compressedData[i] - data[i])));
+                    final int diff = Math.abs(compressedData[i] - data[i]);
+                    if (diff < 100) {
+                        data[i] = 1000;
+                        ++e1;
+                    } else if (diff < 200) {
+                        data[i] = 2000;
+                        ++e2;
+                    } else if (diff < 300) {
+                        data[i] = 3000;
+                        ++e3;
+                    } else if (diff < 400) {
+                        data[i] = 4000;
+                        ++e4;
+                    } else if (diff < 500) {
+                        data[i] = 5000;
+                        ++e5;
+                    } else {
+                        data[i] = 0x0;
+                    }
+//                    assert (data[i] != 0 || (data[i] == 0 && compressedData[i] == 0)) : "BAD";
+//                    data[i] = (short) (5 * Utils.u16BitsToShort(Math.abs(compressedData[i] - data[i])));
                 }
+                LOG.info(String.format("E1: %.2f E2: %.2f E3: %.2f E4: %.2f E5: %.2f",
+                        (float)e1/(float)data.length,
+                        (float)e2/(float)data.length,
+                        (float)e3/(float)data.length,
+                        (float)e4/(float)data.length,
+                        (float)e5/(float)data.length));
 
                 //LOG.warn("Not yet implemented.");
             }
@@ -200,9 +220,9 @@ public class CellHandler extends ContextHandler {
 
             transferedDataSize += buf.length;
 
-            LOG.info(String.format("I:%d;T:%d;S:%d;L:%d  Total transfered data: [%d KB] [%d MB]",
-                    index, timepoint, setup, level,
-                    (transferedDataSize / 1000), ((transferedDataSize / 1000) / 1000)));
+//            LOG.info(String.format("I:%d;T:%d;S:%d;L:%d  Total transfered data: [%d KB] [%d MB]",
+//                    index, timepoint, setup, level,
+//                    (transferedDataSize / 1000), ((transferedDataSize / 1000) / 1000)));
 
             response.setContentType("application/octet-stream");
             response.setContentLength(buf.length);
