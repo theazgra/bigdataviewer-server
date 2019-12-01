@@ -11,6 +11,9 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
 import compression.U16;
+import compression.data.Chunk3D;
+import compression.data.V3i;
+import compression.data.V3l;
 import compression.quantization.scalar.ScalarQuantizer;
 import compression.utilities.Utils;
 import org.eclipse.jetty.server.Request;
@@ -149,59 +152,73 @@ public class CellHandler extends ContextHandler {
             final int level = Integer.parseInt(parts[4]);
             final Key key = new VolatileGlobalCellCache.Key(timepoint, setup, level, index);
             VolatileCell<?> cell = cache.getLoadingVolatileCache().getIfPresent(key, cacheHints);
+
+            final int[] cellDims = new int[]{
+                    Integer.parseInt(parts[5]),
+                    Integer.parseInt(parts[6]),
+                    Integer.parseInt(parts[7])};
+            final long[] cellMin = new long[]{
+                    Long.parseLong(parts[8]),
+                    Long.parseLong(parts[9]),
+                    Long.parseLong(parts[10])};
             if (cell == null) {
-                final int[] cellDims = new int[]{
-                        Integer.parseInt(parts[5]),
-                        Integer.parseInt(parts[6]),
-                        Integer.parseInt(parts[7])};
-                final long[] cellMin = new long[]{
-                        Long.parseLong(parts[8]),
-                        Long.parseLong(parts[9]),
-                        Long.parseLong(parts[10])};
                 cell = cache.getLoadingVolatileCache().get(key, cacheHints, new VolatileCellLoader<>(loader, timepoint, setup, level, cellDims, cellMin));
             }
 
 
             @SuppressWarnings("unchecked")
             short[] data = ((VolatileCell<VolatileShortArray>) cell).getData().getCurrentStorageArray();
+
+            Chunk3D boxChunk = new Chunk3D(new V3i(cellDims[0], cellDims[1], cellDims[2]), data);
+            boxChunk.setOffsets(cellMin[0], cellMin[1], cellMin[2]);
+            //System.out.println(boxChunk.toString());
+            // TODO(Moravec): When chunking boxes of non-uniform dimensions, some data cells are missed!
+            if (cellDims[0] != 16 || cellDims[1] != 16 ||  cellDims[2] != 16) {
+                boxChunk.divideIntoChunks(new V3i(2, 2, 2));
+            }
+            //boxChunk.divideIntoChunks(new V3i(3,3,3));
+
             if (compressionParams.shouldCompressData()) {
                 assert (quantizer != null) : "Compressor wasn't created";
                 data = quantizer.quantize(data);
             } else if (compressionParams.renderDifference()) {
+                final int diffThreshold = compressionParams.getDiffThreshold();
                 assert (quantizer != null) : "Compressor wasn't created";
                 short[] compressedData = quantizer.quantize(data);
-                int e1 = 0, e2 = 0, e3 = 0, e4 = 0, e5 = 0;
+                int maxError = Integer.MIN_VALUE;
+
                 for (int i = 0; i < data.length; i++) {
                     final int diff = Math.abs(compressedData[i] - data[i]);
-                    if (diff < 100) {
-                        data[i] = 1000;
-                        ++e1;
-                    } else if (diff < 200) {
-                        data[i] = 2000;
-                        ++e2;
-                    } else if (diff < 300) {
-                        data[i] = 3000;
-                        ++e3;
-                    } else if (diff < 400) {
-                        data[i] = 4000;
-                        ++e4;
-                    } else if (diff < 500) {
-                        data[i] = 5000;
-                        ++e5;
-                    } else {
-                        data[i] = 0x0;
-                    }
-//                    assert (data[i] != 0 || (data[i] == 0 && compressedData[i] == 0)) : "BAD";
-//                    data[i] = (short) (5 * Utils.u16BitsToShort(Math.abs(compressedData[i] - data[i])));
-                }
-                LOG.info(String.format("E1: %.2f E2: %.2f E3: %.2f E4: %.2f E5: %.2f",
-                        (float)e1/(float)data.length,
-                        (float)e2/(float)data.length,
-                        (float)e3/(float)data.length,
-                        (float)e4/(float)data.length,
-                        (float)e5/(float)data.length));
+                    maxError = Math.max(maxError, diff);
+                    // NOTE(Moravec): We know that we are not producing non-existing values.
+                    // There was no data but now there is.
+//                    if (data[i] == 0 && compressedData[i] != 0) {
+//                        data[i] = (short) 0xffff;
+//                        ++nonExistingDataCount;
+//                    } else {
+//                        data[i] = (short) 0x0;
+//                    }
 
-                //LOG.warn("Not yet implemented.");
+//                    if (compressedData[i] > data[i]) {
+//                        data[i] = compressedData[i];
+//                    } else {
+//                        data[i] = 0;
+//                    }
+
+//                    if (diff > diffThreshold) {
+//                        data[i] = (short) diff;
+//                    } else {
+//                        data[i] = 0;
+//                    }
+
+
+                    // NOTE(Moravec): Squared error
+                    final short squaredError = (short) Math.floor(Math.pow(compressedData[i] - data[i], 2));
+                    data[i] = squaredError;
+                }
+                if (maxError > 0) {
+                    System.out.println("Max error: " + maxError);
+                }
             }
 
             final byte[] buf = new byte[2 * data.length];

@@ -72,7 +72,7 @@ public class BigDataServer {
         final String thumbnailDirectory = null;
         final boolean enableManagerContext = false;
         return new Parameters(port, hostname, new HashMap<String, String>(), thumbnailDirectory, enableManagerContext,
-                new CustomCompressionParameters("", "", 8, false, false));
+                new CustomCompressionParameters("", "", 8, false, false, -1));
     }
 
     public static void main(final String[] args) throws Exception {
@@ -220,6 +220,7 @@ public class BigDataServer {
         final String ENABLE_COMPRESSION_DIFF = "diff";
         final String DUMP_FILE = "dump";
         final String TRAIN_FILE = "train";
+        final String DIFF_THRESHOLD = "diffthreshold";
         // create Options object
         final Options options = new Options();
 
@@ -281,6 +282,12 @@ public class BigDataServer {
                 .withDescription("Send compression difference")
                 .create(ENABLE_COMPRESSION_DIFF));
 
+        options.addOption(OptionBuilder
+                .withDescription("Render difference above this threshold")
+                .hasArg()
+                .withArgName(DIFF_THRESHOLD)
+                .create(DIFF_THRESHOLD));
+
         if (Constants.ENABLE_EXPERIMENTAL_FEATURES) {
             options.addOption(OptionBuilder
                     .withDescription("enable statistics and manager context. EXPERIMENTAL!")
@@ -312,6 +319,10 @@ public class BigDataServer {
             final boolean enableCompressionDiff = cmd.hasOption(ENABLE_COMPRESSION_DIFF);
             final String trainFile = cmd.getOptionValue(TRAIN_FILE, "");
             final int bitTarget = Integer.parseInt(cmd.getOptionValue(BIT_TARGET, "8"));
+            final int diffThreshold = Integer.parseInt(cmd.getOptionValue(DIFF_THRESHOLD, "-1"));
+            if (diffThreshold > -1) {
+                LOG.info("Diff threshold is set to: " + diffThreshold);
+            }
 
             if ((enableCompression || enableCompressionDiff) && (trainFile.isEmpty())) {
                 throw new MissingArgumentException(String.format("!!! %s must be specified when %s or %s is specified !!!",
@@ -319,7 +330,7 @@ public class BigDataServer {
             }
 
             final CustomCompressionParameters customCompParams = new CustomCompressionParameters(dumpFile, trainFile, bitTarget,
-                    enableCompression, enableCompressionDiff);
+                    enableCompression, enableCompressionDiff, diffThreshold);
 
             LOG.info("Compression is " + (enableCompression ? "Matched" : "Not matched"));
             LOG.info("Compression-Diff is " + (enableCompressionDiff ? "Matched" : "Not matched"));
