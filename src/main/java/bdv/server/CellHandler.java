@@ -2,6 +2,7 @@ package bdv.server;
 
 import java.awt.image.BufferedImage;
 import java.io.*;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -12,6 +13,7 @@ import javax.servlet.http.HttpServletResponse;
 
 import compression.U16;
 import compression.data.Chunk3D;
+import compression.data.ChunkIO;
 import compression.data.V3i;
 import compression.data.V3l;
 import compression.quantization.scalar.ScalarQuantizer;
@@ -165,18 +167,19 @@ public class CellHandler extends ContextHandler {
                 cell = cache.getLoadingVolatileCache().get(key, cacheHints, new VolatileCellLoader<>(loader, timepoint, setup, level, cellDims, cellMin));
             }
 
-
             @SuppressWarnings("unchecked")
             short[] data = ((VolatileCell<VolatileShortArray>) cell).getData().getCurrentStorageArray();
 
-            Chunk3D boxChunk = new Chunk3D(new V3i(cellDims[0], cellDims[1], cellDims[2]), data);
-            boxChunk.setOffsets(cellMin[0], cellMin[1], cellMin[2]);
-            //System.out.println(boxChunk.toString());
-            // TODO(Moravec): When chunking boxes of non-uniform dimensions, some data cells are missed!
-            if (cellDims[0] != 16 || cellDims[1] != 16 ||  cellDims[2] != 16) {
-                boxChunk.divideIntoChunks(new V3i(2, 2, 2));
-            }
-            //boxChunk.divideIntoChunks(new V3i(3,3,3));
+
+//            // Stupidity just testing chunking
+//            {
+//                Chunk3D dataBox = new Chunk3D(new V3i(cellDims[0], cellDims[1], cellDims[2]),
+//                        new V3l(cellMin[0], cellMin[1], cellMin[1]), data);
+//                Chunk3D[] chunks = dataBox.divideIntoChunks(new V3i(3));
+//                dataBox.zeroData();
+//                dataBox.reconstructFromChunks(chunks);
+//                data = dataBox.getDataAsShort();
+//            }
 
             if (compressionParams.shouldCompressData()) {
                 assert (quantizer != null) : "Compressor wasn't created";
@@ -229,10 +232,15 @@ public class CellHandler extends ContextHandler {
             }
 
             if (compressionParams.shouldDumpRequestData()) {
+                // Normal data dump
+                /*
                 FileOutputStream dumpStream = new FileOutputStream(compressionParams.getDumpFile(), true);
                 dumpStream.write(buf);
                 dumpStream.flush();
                 dumpStream.close();
+                */
+                // Dumping HDF5 3D chunks
+                ChunkIO.saveChunks(cellDims, cellMin, buf, compressionParams.getDumpFile());
             }
 
             transferedDataSize += buf.length;
