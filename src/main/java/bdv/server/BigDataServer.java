@@ -1,9 +1,11 @@
 package bdv.server;
 
+
 import compression.U16;
 import compression.quantization.QuantizationValueCache;
 import compression.quantization.scalar.LloydMaxU16ScalarQuantization;
 import compression.quantization.scalar.ScalarQuantizer;
+import compression.utilities.Utils;
 import mpicbg.spim.data.SpimDataException;
 
 import org.apache.commons.cli.*;
@@ -100,7 +102,7 @@ public class BigDataServer {
         if (compParams.shouldCompressData() || compParams.renderDifference()) {
             //TODO(Moravec): Replace LloydMaxU16ScalarQuantization with some ICompressor.
 
-            QuantizationValueCache quantizationCache = new QuantizationValueCache("D:\\tmp\\bdv_cache");
+            QuantizationValueCache quantizationCache = new QuantizationValueCache("D:\\biology\\bdv_cache");
             final int quantizationValueCount = (int) Math.pow(2, compParams.getBitTarget());
 
             final String trainFilename = new File(compParams.getTrainFile()).getName();
@@ -112,8 +114,12 @@ public class BigDataServer {
                 LOG.info("Initialized quantizer...");
             } else {
                 LOG.info("Calculating quantization values...");
-                LloydMaxU16ScalarQuantization lloydMax = new LloydMaxU16ScalarQuantization(compParams.getTrainFile(), compParams.getBitTarget());
-                lloydMax.train(false);
+
+                LloydMaxU16ScalarQuantization lloydMax = new LloydMaxU16ScalarQuantization(
+                        Utils.convertU16ByteArrayToIntArray(Utils.readFileBytes(compParams.getTrainFile())),
+                        (int) Math.pow(2, compParams.getBitTarget()));
+
+                lloydMax.train();
                 quantizationCache.saveQuantizationValue(trainFilename, lloydMax.getCentroids());
                 LOG.info("Saving quantization values...");
                 quantizer = new ScalarQuantizer(U16.Min, U16.Max, lloydMax.getCentroids());
