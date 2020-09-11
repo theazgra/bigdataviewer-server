@@ -117,5 +117,10 @@
 			<artifactId>commons-cli</artifactId>
 			<version>${commons-cli.version}</version>
 		</dependency>
+		<dependency>
+			<groupId>org.azgra</groupId>
+			<artifactId>DataCompressor</artifactId>
+			<version>1.0-SNAPSHOT</version>
+		</dependency>
     </dependencies>
 </project>
