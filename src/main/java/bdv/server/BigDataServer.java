@@ -1,27 +1,23 @@
 package bdv.server;
 
 
-import compression.U16;
-import compression.quantization.QuantizationValueCache;
-import compression.quantization.scalar.LloydMaxU16ScalarQuantization;
-import compression.quantization.scalar.ScalarQuantizer;
-import compression.utilities.Utils;
+import azgracompress.cli.CliConstants;
+import azgracompress.cli.ParseUtils;
+import azgracompress.compression.CompressionOptions;
+import azgracompress.data.V2i;
+import azgracompress.data.V3i;
+import azgracompress.fileformat.QuantizationType;
+import bdv.util.OptionWithOrder;
 import mpicbg.spim.data.SpimDataException;
-
 import org.apache.commons.cli.*;
 import org.apache.commons.lang.StringUtils;
-import org.eclipse.jetty.server.Connector;
-import org.eclipse.jetty.server.ConnectorStatistics;
-import org.eclipse.jetty.server.Handler;
-import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.server.ServerConnector;
+import org.eclipse.jetty.server.*;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
 import org.eclipse.jetty.server.handler.HandlerCollection;
 import org.eclipse.jetty.server.handler.StatisticsHandler;
 import org.eclipse.jetty.util.log.Log;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
 
-import java.io.File;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
@@ -33,6 +29,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Optional;
 
 /**
  * Serve XML/HDF5 datasets over HTTP.
@@ -61,7 +58,7 @@ import java.util.Map.Entry;
 public class BigDataServer {
     private static final org.eclipse.jetty.util.log.Logger LOG = Log.getLogger(BigDataServer.class);
 
-    private static ScalarQuantizer quantizer;
+    //    private static ScalarQuantizer quantizer;
 
     static Parameters getDefaultParameters() {
         final int port = 8080;
@@ -73,8 +70,12 @@ public class BigDataServer {
         }
         final String thumbnailDirectory = null;
         final boolean enableManagerContext = false;
-        return new Parameters(port, hostname, new HashMap<String, String>(), thumbnailDirectory, enableManagerContext,
-                new CustomCompressionParameters("", "", 8, false, false, -1));
+        return new Parameters(port,
+                              hostname,
+                              new HashMap<String, String>(),
+                              thumbnailDirectory,
+                              enableManagerContext,
+                              new CompressionOptions());
     }
 
     public static void main(final String[] args) throws Exception {
@@ -96,36 +97,6 @@ public class BigDataServer {
         LOG.info("Set connectors: " + connector);
         server.setConnectors(new Connector[]{connector});
         final String baseURL = "http://" + server.getURI().getHost() + ":" + params.getPort();
-
-
-        final CustomCompressionParameters compParams = params.getCompressionParams();
-        if (compParams.shouldCompressData() || compParams.renderDifference()) {
-            //TODO(Moravec): Replace LloydMaxU16ScalarQuantization with some ICompressor.
-
-            QuantizationValueCache quantizationCache = new QuantizationValueCache("D:\\biology\\bdv_cache");
-            final int quantizationValueCount = (int) Math.pow(2, compParams.getBitTarget());
-
-            final String trainFilename = new File(compParams.getTrainFile()).getName();
-            if (quantizationCache.areQuantizationValueCached(trainFilename, quantizationValueCount)) {
-                LOG.info("Found cached quantization values...");
-                final int[] centroids = quantizationCache.readCachedValues(trainFilename, quantizationValueCount);
-                assert (centroids.length == quantizationValueCount) : "Cache is corrupted";
-                quantizer = new ScalarQuantizer(U16.Min, U16.Max, centroids);
-                LOG.info("Initialized quantizer...");
-            } else {
-                LOG.info("Calculating quantization values...");
-
-                LloydMaxU16ScalarQuantization lloydMax = new LloydMaxU16ScalarQuantization(
-                        Utils.convertU16ByteArrayToIntArray(Utils.readFileBytes(compParams.getTrainFile())),
-                        (int) Math.pow(2, compParams.getBitTarget()));
-
-                lloydMax.train();
-                quantizationCache.saveQuantizationValue(trainFilename, lloydMax.getCentroids());
-                LOG.info("Saving quantization values...");
-                quantizer = new ScalarQuantizer(U16.Min, U16.Max, lloydMax.getCentroids());
-            }
-        }
-
 
         // Handler initialization
         final HandlerCollection handlers = new HandlerCollection();
@@ -172,13 +143,13 @@ public class BigDataServer {
         private final String thumbnailDirectory;
 
 
-        private final CustomCompressionParameters compressionParam;
+        private final CompressionOptions compressionParam;
 
         private final boolean enableManagerContext;
 
         Parameters(final int port, final String hostname, final Map<String, String> datasetNameToXml,
                    final String thumbnailDirectory, final boolean enableManagerContext,
-                   final CustomCompressionParameters customCompressionParameters) {
+                   final CompressionOptions customCompressionParameters) {
             this.port = port;
             this.hostname = hostname;
             this.datasetNameToXml = datasetNameToXml;
@@ -212,7 +183,7 @@ public class BigDataServer {
             return enableManagerContext;
         }
 
-        public CustomCompressionParameters getCompressionParams() {
+        public CompressionOptions getCompressionParams() {
             return compressionParam;
         }
 
@@ -221,12 +192,6 @@ public class BigDataServer {
 
     @SuppressWarnings("static-access")
     static private Parameters processOptions(final String[] args, final Parameters defaultParameters) throws IOException {
-        final String BIT_TARGET = "bits";
-        final String ENABLE_COMPRESSION = "compress";
-        final String ENABLE_COMPRESSION_DIFF = "diff";
-        final String DUMP_FILE = "dump";
-        final String TRAIN_FILE = "train";
-        final String DIFF_THRESHOLD = "diffthreshold";
         // create Options object
         final Options options = new Options();
 
@@ -234,70 +199,63 @@ public class BigDataServer {
 
         final String description =
                 "Serves one or more XML/HDF5 datasets for remote access over HTTP.\n" +
-                        "Provide (NAME XML) pairs on the command line or in a dataset file, where NAME is the name under which the dataset should be made accessible and XML is the path to the XML file of the dataset.";
+                        "Provide (NAME XML) pairs on the command line or in a dataset file, where NAME is the name under which the " +
+                        "dataset should be made accessible and XML is the path to the XML file of the dataset.\n" +
+                        "If -qcmp option is specified, these options are enabled:\u001b[35m-sq,-vq,-b,-cbc\u001b[0m\n";
 
         options.addOption(OptionBuilder
-                .withDescription("Hostname of the server.\n(default: " + defaultParameters.getHostname() + ")")
-                .hasArg()
-                .withArgName("HOSTNAME")
-                .create("s"));
+                                  .withDescription("Hostname of the server.\n(default: " + defaultParameters.getHostname() + ")")
+                                  .hasArg()
+                                  .withArgName("HOSTNAME")
+                                  .create("s"));
 
         options.addOption(OptionBuilder
-                .withDescription("Listening port.\n(default: " + defaultParameters.getPort() + ")")
-                .hasArg()
-                .withArgName("PORT")
-                .create("p"));
+                                  .withDescription("Listening port.\n(default: " + defaultParameters.getPort() + ")")
+                                  .hasArg()
+                                  .withArgName("PORT")
+                                  .create("p"));
 
         // -d or multiple {name name.xml} pairs
         options.addOption(OptionBuilder
-                .withDescription("Dataset file: A plain text file specifying one dataset per line. Each line is formatted as \"NAME <TAB> XML\".")
-                .hasArg()
-                .withArgName("FILE")
-                .create("d"));
+                                  .withDescription(
+                                          "Dataset file: A plain text file specifying one dataset per line. Each line is formatted as " +
+                                                  "\"NAME <TAB> XML\".")
+                                  .hasArg()
+                                  .withArgName("FILE")
+                                  .create("d"));
 
         options.addOption(OptionBuilder
-                .withDescription("Directory to store thumbnails. (new temporary directory by default.)")
-                .hasArg()
-                .withArgName("DIRECTORY")
-                .create("t"));
+                                  .withDescription("Directory to store thumbnails. (new temporary directory by default.)")
+                                  .hasArg()
+                                  .withArgName("DIRECTORY")
+                                  .create("t"));
+
+        final String ENABLE_COMPRESSION = "qcmp";
+
+        final Option test = OptionBuilder
+                .withDescription("Enable QCMP compression")
+                .create(ENABLE_COMPRESSION);
 
 
-        options.addOption(OptionBuilder
-                .withDescription("File in which to store request data dump")
-                .hasArg()
-                .withArgName("DUMP")
-                .create(DUMP_FILE));
+        int optionOrder = 0;
+        options.addOption(new OptionWithOrder(OptionBuilder
+                                                      .withDescription("Enable QCMP compression")
+                                                      .create(ENABLE_COMPRESSION), ++optionOrder));
 
-        options.addOption(OptionBuilder
-                .withDescription("Enable request compression")
-                .create(ENABLE_COMPRESSION));
 
-        options.addOption(OptionBuilder
-                .withDescription("Compression train file")
-                .hasArg()
-                .withArgName("TRAINFILE")
-                .create(TRAIN_FILE));
+        OptionGroup qcmpOptionGroup = new OptionGroup();
+        qcmpOptionGroup.setRequired(false);
+        qcmpOptionGroup.addOption(new OptionWithOrder(CliConstants.createCBCMethod(), ++optionOrder));
+        qcmpOptionGroup.addOption(new OptionWithOrder(CliConstants.createSQOption(), ++optionOrder));
+        qcmpOptionGroup.addOption(new OptionWithOrder(CliConstants.createVQOption(), ++optionOrder));
+        qcmpOptionGroup.addOption(new OptionWithOrder(CliConstants.createBitsOption(), ++optionOrder));
+        options.addOptionGroup(qcmpOptionGroup);
 
-        options.addOption(OptionBuilder
-                .withDescription("Compression bit target")
-                .hasArg()
-                .withArgName("BITS")
-                .create(BIT_TARGET));
-
-        options.addOption(OptionBuilder
-                .withDescription("Send compression difference")
-                .create(ENABLE_COMPRESSION_DIFF));
-
-        options.addOption(OptionBuilder
-                .withDescription("Render difference above this threshold")
-                .hasArg()
-                .withArgName(DIFF_THRESHOLD)
-                .create(DIFF_THRESHOLD));
 
         if (Constants.ENABLE_EXPERIMENTAL_FEATURES) {
             options.addOption(OptionBuilder
-                    .withDescription("enable statistics and manager context. EXPERIMENTAL!")
-                    .create("m"));
+                                      .withDescription("enable statistics and manager context. EXPERIMENTAL!")
+                                      .create("m"));
         }
 
         try {
@@ -317,29 +275,55 @@ public class BigDataServer {
 
             final HashMap<String, String> datasets = new HashMap<String, String>(defaultParameters.getDatasets());
 
-            // Custom compression parameters
-            //cmd.hasOption()
 
-            final String dumpFile = cmd.getOptionValue(DUMP_FILE, "");
-            final boolean enableCompression = cmd.hasOption(ENABLE_COMPRESSION);
-            final boolean enableCompressionDiff = cmd.hasOption(ENABLE_COMPRESSION_DIFF);
-            final String trainFile = cmd.getOptionValue(TRAIN_FILE, "");
-            final int bitTarget = Integer.parseInt(cmd.getOptionValue(BIT_TARGET, "8"));
-            final int diffThreshold = Integer.parseInt(cmd.getOptionValue(DIFF_THRESHOLD, "-1"));
-            if (diffThreshold > -1) {
-                LOG.info("Diff threshold is set to: " + diffThreshold);
+            final boolean enableQcmpCompression = cmd.hasOption(ENABLE_COMPRESSION);
+            CompressionOptions compressionOptions = new CompressionOptions();
+            if (enableQcmpCompression) {
+                compressionOptions.setQuantizationType(QuantizationType.Invalid);
+                if (cmd.hasOption(CliConstants.SCALAR_QUANTIZATION_LONG))
+                    compressionOptions.setQuantizationType(QuantizationType.Scalar);
+                else if (cmd.hasOption(CliConstants.VECTOR_QUANTIZATION_LONG)) {
+                    final String vqValue = cmd.getOptionValue(CliConstants.VECTOR_QUANTIZATION_LONG);
+                    Optional<V2i> maybeV2 = ParseUtils.tryParseV2i(vqValue, 'x');
+                    if (maybeV2.isPresent()) {
+                        compressionOptions.setQuantizationType(QuantizationType.Vector2D);
+                        compressionOptions.setQuantizationVector(new V3i(maybeV2.get().getX(), maybeV2.get().getY(), 1));
+                    } else {
+                        Optional<V3i> maybeV3 = ParseUtils.tryParseV3i(vqValue, 'x');
+                        if (maybeV3.isPresent()) {
+                            compressionOptions.setQuantizationType(QuantizationType.Vector3D);
+                            compressionOptions.setQuantizationVector(maybeV3.get());
+                        }
+                    }
+                }
+                if (compressionOptions.getQuantizationType() == QuantizationType.Invalid) {
+                    throw new ParseException("Invalid quantization type.");
+                }
+
+                compressionOptions.setCodebookType(CompressionOptions.CodebookType.Global);
+                compressionOptions.setCodebookCacheFolder(cmd.getOptionValue(CliConstants.CODEBOOK_CACHE_FOLDER_LONG));
+                compressionOptions.setBitsPerCodebookIndex(Integer.parseInt(cmd.getOptionValue(CliConstants.BITS_LONG)));
+
+                StringBuilder compressionReport = new StringBuilder();
+                compressionReport.append("\u001b[33m");
+                compressionReport.append("Quantization type: ");
+                switch (compressionOptions.getQuantizationType()) {
+                    case Scalar:
+                        compressionReport.append("Scalar\n");
+                        break;
+                    case Vector1D:
+                        compressionReport.append(String.format("Vector1D %s\n", compressionOptions.getQuantizationVector().toString()));
+                        break;
+                    case Vector2D:
+                        compressionReport.append(String.format("Vector2D %s\n", compressionOptions.getQuantizationVector().toString()));
+                        break;
+                }
+                compressionReport.append("Bits per codebook index: ").append(compressionOptions.getBitsPerCodebookIndex()).append('\n');
+                compressionReport.append("Codebook cache folder: ").append(compressionOptions.getCodebookCacheFolder()).append('\n');
+                compressionReport.append("\u001b[0m");
+
+                System.out.println(compressionReport.toString());
             }
-
-            if ((enableCompression || enableCompressionDiff) && (trainFile.isEmpty())) {
-                throw new MissingArgumentException(String.format("!!! %s must be specified when %s or %s is specified !!!",
-                        TRAIN_FILE, ENABLE_COMPRESSION, ENABLE_COMPRESSION_DIFF));
-            }
-
-            final CustomCompressionParameters customCompParams = new CustomCompressionParameters(dumpFile, trainFile, bitTarget,
-                    enableCompression, enableCompressionDiff, diffThreshold);
-
-            LOG.info("Compression is " + (enableCompression ? "Matched" : "Not matched"));
-            LOG.info("Compression-Diff is " + (enableCompressionDiff ? "Matched" : "Not matched"));
 
             boolean enableManagerContext = false;
             if (Constants.ENABLE_EXPERIMENTAL_FEATURES) {
@@ -388,18 +372,37 @@ public class BigDataServer {
             if (datasets.isEmpty())
                 throw new IllegalArgumentException("Dataset list is empty.");
 
-            return new Parameters(port, serverName, datasets, thumbnailDirectory, enableManagerContext,
-                    customCompParams);
+            return new Parameters(port,
+                                  serverName,
+                                  datasets,
+                                  thumbnailDirectory,
+                                  enableManagerContext,
+                                  enableQcmpCompression ? compressionOptions : null);
         } catch (final ParseException | IllegalArgumentException e) {
             LOG.warn(e.getMessage());
             System.out.println();
             final HelpFormatter formatter = new HelpFormatter();
+            formatter.setOptionComparator((x, y) -> {
+                if (x instanceof OptionWithOrder && y instanceof OptionWithOrder) {
+                    return ((OptionWithOrder) x).compareTo((OptionWithOrder) y);
+                } else if (x instanceof OptionWithOrder) {
+                    return 1;
+                } else if (y instanceof OptionWithOrder) {
+                    return -1;
+                } else {
+                    Option opt1 = (Option) x;
+                    Option opt2 = (Option) y;
+                    return opt1.getOpt().compareToIgnoreCase(opt2.getOpt());
+                }
+            });
             formatter.printHelp(cmdLineSyntax, description, options, null);
         }
         return null;
     }
 
-    private static void tryAddDataset(final HashMap<String, String> datasetNameToXML, final String name, final String xmlpath) throws IllegalArgumentException {
+    private static void tryAddDataset(final HashMap<String, String> datasetNameToXML,
+                                      final String name,
+                                      final String xmlpath) throws IllegalArgumentException {
         for (final String reserved : Constants.RESERVED_CONTEXT_NAMES)
             if (name.equals(reserved))
                 throw new IllegalArgumentException("Cannot use dataset name: \"" + name + "\" (reserved for internal use).");
@@ -421,11 +424,13 @@ public class BigDataServer {
                     return thumbnails.toFile().getAbsolutePath();
                 } catch (final IOException e) {
                     LOG.warn(e.getMessage());
-                    LOG.warn("Could not create thumbnails directory \"" + thumbnailDirectoryName + "\".\n Trying to create temporary directory.");
+                    LOG.warn("Could not create thumbnails directory \"" + thumbnailDirectoryName + "\".\n Trying to create temporary " +
+                                     "directory.");
                 }
             } else {
                 if (!Files.isDirectory(thumbnails))
-                    LOG.warn("Thumbnails directory \"" + thumbnailDirectoryName + "\" is not a directory.\n Trying to create temporary directory.");
+                    LOG.warn("Thumbnails directory \"" + thumbnailDirectoryName + "\" is not a directory.\n Trying to create temporary " +
+                                     "directory.");
                 else
                     return thumbnails.toFile().getAbsolutePath();
             }
@@ -447,8 +452,8 @@ public class BigDataServer {
             final String xmlpath = entry.getValue();
             final String context = "/" + name;
             final CellHandler ctx = new CellHandler(baseURL + context + "/", xmlpath, name,
-                    thumbnailsDirectoryName,
-                    params.getCompressionParams(), quantizer);
+                                                    thumbnailsDirectoryName,
+                                                    params.getCompressionParams());
 
             ctx.setContextPath(context);
             handlers.addHandler(ctx);
