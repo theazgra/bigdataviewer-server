@@ -78,55 +78,6 @@ public class BigDataServer {
                               new CompressionOptions());
     }
 
-    public static void main(final String[] args) throws Exception {
-        System.setProperty("org.eclipse.jetty.util.log.class", "org.eclipse.jetty.util.log.StdErrLog");
-
-        final Parameters params = processOptions(args, getDefaultParameters());
-        if (params == null)
-            return;
-
-        final String thumbnailsDirectoryName = getThumbnailDirectoryPath(params);
-
-        // Threadpool for multiple connections
-        final Server server = new Server(new QueuedThreadPool(200, 8));
-
-        // ServerConnector configuration
-        final ServerConnector connector = new ServerConnector(server);
-        connector.setHost(params.getHostname());
-        connector.setPort(params.getPort());
-        LOG.info("Set connectors: " + connector);
-        server.setConnectors(new Connector[]{connector});
-        final String baseURL = "http://" + server.getURI().getHost() + ":" + params.getPort();
-
-        // Handler initialization
-        final HandlerCollection handlers = new HandlerCollection();
-
-        final ContextHandlerCollection datasetHandlers = createHandlers(baseURL, params, thumbnailsDirectoryName);
-        handlers.addHandler(datasetHandlers);
-        handlers.addHandler(new JsonDatasetListHandler(server, datasetHandlers));
-
-        Handler handler = handlers;
-        if (params.enableManagerContext()) {
-            // Add Statistics bean to the connector
-            final ConnectorStatistics connectorStats = new ConnectorStatistics();
-            connector.addBean(connectorStats);
-
-            // create StatisticsHandler wrapper and ManagerHandler
-            final StatisticsHandler statHandler = new StatisticsHandler();
-            handlers.addHandler(new ManagerHandler(baseURL, server, connectorStats, statHandler, datasetHandlers, thumbnailsDirectoryName));
-            statHandler.setHandler(handlers);
-            handler = statHandler;
-        }
-
-
-        LOG.info("Set handler: " + handler);
-        server.setHandler(handler);
-        LOG.info("Server Base URL: " + baseURL);
-        LOG.info("BigDataServer starting");
-        server.start();
-        server.join();
-    }
-
     /**
      * Server parameters: hostname, port, datasets.
      */
@@ -186,7 +137,6 @@ public class BigDataServer {
         public CompressionOptions getCompressionParams() {
             return compressionParam;
         }
-
     }
 
 
@@ -202,6 +152,7 @@ public class BigDataServer {
                         "Provide (NAME XML) pairs on the command line or in a dataset file, where NAME is the name under which the " +
                         "dataset should be made accessible and XML is the path to the XML file of the dataset.\n" +
                         "If -qcmp option is specified, these options are enabled:\u001b[35m-sq,-vq,-b,-cbc\u001b[0m\n";
+
 
         options.addOption(OptionBuilder
                                   .withDescription("Hostname of the server.\n(default: " + defaultParameters.getHostname() + ")")
@@ -243,13 +194,10 @@ public class BigDataServer {
                                                       .create(ENABLE_COMPRESSION), ++optionOrder));
 
 
-        OptionGroup qcmpOptionGroup = new OptionGroup();
-        qcmpOptionGroup.setRequired(false);
-        qcmpOptionGroup.addOption(new OptionWithOrder(CliConstants.createCBCMethod(), ++optionOrder));
-        qcmpOptionGroup.addOption(new OptionWithOrder(CliConstants.createSQOption(), ++optionOrder));
-        qcmpOptionGroup.addOption(new OptionWithOrder(CliConstants.createVQOption(), ++optionOrder));
-        qcmpOptionGroup.addOption(new OptionWithOrder(CliConstants.createBitsOption(), ++optionOrder));
-        options.addOptionGroup(qcmpOptionGroup);
+        options.addOption(new OptionWithOrder(CliConstants.createCBCMethod(), ++optionOrder));
+        options.addOption(new OptionWithOrder(CliConstants.createSQOption(), ++optionOrder));
+        options.addOption(new OptionWithOrder(CliConstants.createVQOption(), ++optionOrder));
+        options.addOption(new OptionWithOrder(CliConstants.createBitsOption(), ++optionOrder));
 
 
         if (Constants.ENABLE_EXPERIMENTAL_FEATURES) {
@@ -309,15 +257,20 @@ public class BigDataServer {
                 compressionReport.append("Quantization type: ");
                 switch (compressionOptions.getQuantizationType()) {
                     case Scalar:
-                        compressionReport.append("Scalar\n");
+                        compressionReport.append("Scalar");
                         break;
                     case Vector1D:
-                        compressionReport.append(String.format("Vector1D %s\n", compressionOptions.getQuantizationVector().toString()));
+                        compressionReport.append("Vector1D");
                         break;
                     case Vector2D:
-                        compressionReport.append(String.format("Vector2D %s\n", compressionOptions.getQuantizationVector().toString()));
+                        compressionReport.append("Vector2D");
+                        break;
+                    case Vector3D:
+                        compressionReport.append("Vector3D");
                         break;
                 }
+                compressionReport.append(compressionOptions.getQuantizationVector().toString());
+                compressionReport.append('\n');
                 compressionReport.append("Bits per codebook index: ").append(compressionOptions.getBitsPerCodebookIndex()).append('\n');
                 compressionReport.append("Codebook cache folder: ").append(compressionOptions.getCodebookCacheFolder()).append('\n');
                 compressionReport.append("\u001b[0m");
@@ -460,5 +413,54 @@ public class BigDataServer {
         }
 
         return handlers;
+    }
+
+    public static void main(final String[] args) throws Exception {
+        System.setProperty("org.eclipse.jetty.util.log.class", "org.eclipse.jetty.util.log.StdErrLog");
+
+        final Parameters params = processOptions(args, getDefaultParameters());
+        if (params == null)
+            return;
+
+        final String thumbnailsDirectoryName = getThumbnailDirectoryPath(params);
+
+        // Threadpool for multiple connections
+        final Server server = new Server(new QueuedThreadPool(200, 8));
+
+        // ServerConnector configuration
+        final ServerConnector connector = new ServerConnector(server);
+        connector.setHost(params.getHostname());
+        connector.setPort(params.getPort());
+        LOG.info("Set connectors: " + connector);
+        server.setConnectors(new Connector[]{connector});
+        final String baseURL = "http://" + server.getURI().getHost() + ":" + params.getPort();
+
+        // Handler initialization
+        final HandlerCollection handlers = new HandlerCollection();
+
+        final ContextHandlerCollection datasetHandlers = createHandlers(baseURL, params, thumbnailsDirectoryName);
+        handlers.addHandler(datasetHandlers);
+        handlers.addHandler(new JsonDatasetListHandler(server, datasetHandlers));
+
+        Handler handler = handlers;
+        if (params.enableManagerContext()) {
+            // Add Statistics bean to the connector
+            final ConnectorStatistics connectorStats = new ConnectorStatistics();
+            connector.addBean(connectorStats);
+
+            // create StatisticsHandler wrapper and ManagerHandler
+            final StatisticsHandler statHandler = new StatisticsHandler();
+            handlers.addHandler(new ManagerHandler(baseURL, server, connectorStats, statHandler, datasetHandlers, thumbnailsDirectoryName));
+            statHandler.setHandler(handlers);
+            handler = statHandler;
+        }
+
+
+        LOG.info("Set handler: " + handler);
+        server.setHandler(handler);
+        LOG.info("Server Base URL: " + baseURL);
+        LOG.info("BigDataServer starting");
+        server.start();
+        server.join();
     }
 }

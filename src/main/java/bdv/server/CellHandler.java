@@ -1,34 +1,16 @@
 package bdv.server;
 
-import java.awt.image.BufferedImage;
-import java.io.*;
-import java.nio.ByteBuffer;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-
-import javax.imageio.ImageIO;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
-
-import compression.U16;
-import compression.data.Chunk3D;
-import compression.data.ChunkIO;
-import compression.data.V3i;
-import compression.data.V3l;
-import compression.quantization.scalar.ScalarQuantizer;
-import compression.utilities.Utils;
-import org.eclipse.jetty.server.Request;
-import org.eclipse.jetty.server.handler.ContextHandler;
-import org.eclipse.jetty.util.log.Log;
-import org.jdom2.Document;
-import org.jdom2.JDOMException;
-import org.jdom2.input.SAXBuilder;
-import org.jdom2.output.Format;
-import org.jdom2.output.XMLOutputter;
-
-import com.google.gson.GsonBuilder;
-
+import azgracompress.cache.ICacheFile;
+import azgracompress.cache.QuantizationCacheManager;
+import azgracompress.compression.CompressionOptions;
+import azgracompress.compression.IImageCompressor;
+import azgracompress.compression.ImageCompressor;
+import azgracompress.data.V3;
+import azgracompress.data.V3i;
+import azgracompress.io.FileInputData;
+import azgracompress.io.FlatBufferInputData;
+import azgracompress.io.InputData;
+import azgracompress.quantization.vector.VQCodebook;
 import bdv.BigDataViewer;
 import bdv.cache.CacheHints;
 import bdv.cache.LoadingStrategy;
@@ -45,9 +27,27 @@ import bdv.spimdata.SequenceDescriptionMinimal;
 import bdv.spimdata.SpimDataMinimal;
 import bdv.spimdata.XmlIoSpimDataMinimal;
 import bdv.util.ThumbnailGenerator;
+import com.google.gson.GsonBuilder;
 import mpicbg.spim.data.SpimDataException;
 import net.imglib2.img.basictypeaccess.volatiles.array.VolatileShortArray;
 import net.imglib2.realtransform.AffineTransform3D;
+import org.eclipse.jetty.server.Request;
+import org.eclipse.jetty.server.handler.ContextHandler;
+import org.eclipse.jetty.util.log.Log;
+import org.jdom2.Document;
+import org.jdom2.JDOMException;
+import org.jdom2.input.SAXBuilder;
+import org.jdom2.output.Format;
+import org.jdom2.output.XMLOutputter;
+
+import javax.imageio.ImageIO;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import java.awt.image.BufferedImage;
+import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 
 public class CellHandler extends ContextHandler {
     private long transferedDataSize = 0;
@@ -96,18 +96,21 @@ public class CellHandler extends ContextHandler {
      * Full path to thumbnail png.
      */
     private final String thumbnailFilename;
-    final CustomCompressionParameters compressionParams;
-    private ScalarQuantizer quantizer;
+
+    /**
+     * Compression stuff.
+     */
+    private final CompressionOptions compressionParams;
+    private ICacheFile compressionCacheFile = null;
+    private ImageCompressor compressor = null;
 
     public CellHandler(final String baseUrl, final String xmlFilename, final String datasetName, final String thumbnailsDirectory,
-                       final CustomCompressionParameters compressionParams,
-                       final ScalarQuantizer quantizer) throws SpimDataException, IOException {
+                       final CompressionOptions compressionParams) throws SpimDataException, IOException {
 
         final XmlIoSpimDataMinimal io = new XmlIoSpimDataMinimal();
         final SpimDataMinimal spimData = io.load(xmlFilename);
         final SequenceDescriptionMinimal seq = spimData.getSequenceDescription();
         final Hdf5ImageLoader imgLoader = (Hdf5ImageLoader) seq.getImgLoader();
-        this.quantizer = quantizer;
         this.compressionParams = compressionParams;
 
         cache = imgLoader.getCacheControl();
@@ -124,10 +127,33 @@ public class CellHandler extends ContextHandler {
         metadataJson = buildMetadataJsonString(imgLoader, seq);
         settingsXmlString = buildSettingsXML(baseFilename);
         thumbnailFilename = createThumbnail(spimData, baseFilename, datasetName, thumbnailsDirectory);
+
+
+        initializeCompression();
+    }
+
+    private void initializeCompression() {
+        if (compressionParams == null)
+            return;
+
+        this.compressionParams.setInputDataInfo(new FileInputData(this.baseFilename));
+        compressor = new ImageCompressor(compressionParams);
+
+        QuantizationCacheManager qcm = new QuantizationCacheManager(compressionParams.getCodebookCacheFolder());
+        this.compressionCacheFile = qcm.loadCacheFile(compressionParams);
+        if (compressionCacheFile != null) {
+
+            LOG.info("CellHandler loaded codebook cache file. '" + compressionCacheFile.toString() + "'");
+            System.out.println("\u001b[33mCellHandler::initializeCompression() loaded codebook cache file. '" +
+                                       compressionCacheFile.toString() + "'\u001b[0m");
+        }
     }
 
     @Override
-    public void doHandle(final String target, final Request baseRequest, final HttpServletRequest request, final HttpServletResponse response) throws IOException {
+    public void doHandle(final String target,
+                         final Request baseRequest,
+                         final HttpServletRequest request,
+                         final HttpServletResponse response) throws IOException {
         if (target.equals("/settings")) {
             if (settingsXmlString != null)
                 respondWithString(baseRequest, response, "application/xml", settingsXmlString);
@@ -159,109 +185,63 @@ public class CellHandler extends ContextHandler {
                     Integer.parseInt(parts[5]),
                     Integer.parseInt(parts[6]),
                     Integer.parseInt(parts[7])};
+
             final long[] cellMin = new long[]{
                     Long.parseLong(parts[8]),
                     Long.parseLong(parts[9]),
                     Long.parseLong(parts[10])};
             if (cell == null) {
-                cell = cache.getLoadingVolatileCache().get(key, cacheHints, new VolatileCellLoader<>(loader, timepoint, setup, level, cellDims, cellMin));
+                cell = cache.getLoadingVolatileCache().get(key,
+                                                           cacheHints,
+                                                           new VolatileCellLoader<>(loader,
+                                                                                    timepoint,
+                                                                                    setup,
+                                                                                    level,
+                                                                                    cellDims,
+                                                                                    cellMin));
             }
+
 
             @SuppressWarnings("unchecked")
             short[] data = ((VolatileCell<VolatileShortArray>) cell).getData().getCurrentStorageArray();
 
-
-//            // Stupidity just testing chunking
-//            {
-//                Chunk3D dataBox = new Chunk3D(new V3i(cellDims[0], cellDims[1], cellDims[2]),
-//                        new V3l(cellMin[0], cellMin[1], cellMin[1]), data);
-//                Chunk3D[] chunks = dataBox.divideIntoChunks(new V3i(3));
-//                dataBox.zeroData();
-//                dataBox.reconstructFromChunks(chunks);
-//                data = dataBox.getDataAsShort();
-//            }
-
-            if (compressionParams.shouldCompressData()) {
-                assert (quantizer != null) : "Compressor wasn't created";
-                data = quantizer.quantize(data);
-            } else if (compressionParams.renderDifference()) {
-                final int diffThreshold = compressionParams.getDiffThreshold();
-                assert (quantizer != null) : "Compressor wasn't created";
-                short[] compressedData = quantizer.quantize(data);
-                int maxError = Integer.MIN_VALUE;
-
-                for (int i = 0; i < data.length; i++) {
-                    final int diff = Math.abs(compressedData[i] - data[i]);
-                    maxError = Math.max(maxError, diff);
-                    // NOTE(Moravec): We know that we are not producing non-existing values.
-                    // There was no data but now there is.
-//                    if (data[i] == 0 && compressedData[i] != 0) {
-//                        data[i] = (short) 0xffff;
-//                        ++nonExistingDataCount;
-//                    } else {
-//                        data[i] = (short) 0x0;
-//                    }
-
-//                    if (compressedData[i] > data[i]) {
-//                        data[i] = compressedData[i];
-//                    } else {
-//                        data[i] = 0;
-//                    }
-
-//                    if (diff > diffThreshold) {
-//                        data[i] = (short) diff;
-//                    } else {
-//                        data[i] = 0;
-//                    }
-
-
-                    // NOTE(Moravec): Squared error
-                    final short squaredError = (short) Math.floor(Math.pow(compressedData[i] - data[i], 2));
-                    data[i] = squaredError;
+            final OutputStream responseStream = response.getOutputStream();
+            if (compressor == null || true) {
+                final byte[] buf = new byte[2 * data.length];
+                for (int i = 0, j = 0; i < data.length; i++) {
+                    final short s = data[i];
+                    buf[j++] = (byte) ((s >> 8) & 0xff);
+                    buf[j++] = (byte) (s & 0xff);
                 }
-                if (maxError > 0) {
-                    System.out.println("Max error: " + maxError);
-                }
+                response.setContentLength(buf.length);
+                responseStream.write(buf);
+            } else {
+                // TODO(Moravec): Implement.
             }
-
-            final byte[] buf = new byte[2 * data.length];
-            for (int i = 0, j = 0; i < data.length; i++) {
-                final short s = data[i];
-                buf[j++] = (byte) ((s >> 8) & 0xff);
-                buf[j++] = (byte) (s & 0xff);
-            }
-
-            if (compressionParams.shouldDumpRequestData()) {
-                // Normal data dump
-                /*
-                FileOutputStream dumpStream = new FileOutputStream(compressionParams.getDumpFile(), true);
-                dumpStream.write(buf);
-                dumpStream.flush();
-                dumpStream.close();
-                */
-                // Dumping HDF5 3D chunks
-                ChunkIO.saveChunks(cellDims, cellMin, buf, compressionParams.getDumpFile());
-            }
-
-            transferedDataSize += buf.length;
-
-//            LOG.info(String.format("I:%d;T:%d;S:%d;L:%d  Total transfered data: [%d KB] [%d MB]",
-//                    index, timepoint, setup, level,
-//                    (transferedDataSize / 1000), ((transferedDataSize / 1000) / 1000)));
+            responseStream.close();
 
             response.setContentType("application/octet-stream");
-            response.setContentLength(buf.length);
             response.setStatus(HttpServletResponse.SC_OK);
             baseRequest.setHandled(true);
-            final OutputStream os = response.getOutputStream();
-            os.write(buf);
-            os.close();
-        } else if (parts[0].
 
-                equals("init")) {
+        } else if (parts[0].equals("init")) {
             respondWithString(baseRequest, response, "application/json", metadataJson);
-        }
+        } else if (parts[0].equals("init_qcmp")) {
+            if (compressor == null) {
+                respondWithString(baseRequest, response,
+                                  "text/plain", "QCMP Compression wasn't enabled on BigDataViewer server.",
+                                  HttpServletResponse.SC_BAD_REQUEST);
+                return;
+            }
 
+            try (DataOutputStream dos = new DataOutputStream(response.getOutputStream())) {
+                compressionCacheFile.writeToStream(dos);
+            }
+
+            response.setContentType("application/octet-stream");
+            response.setStatus(HttpServletResponse.SC_OK);
+            baseRequest.setHandled(true);
+        }
     }
 
     private void provideThumbnail(final Request baseRequest, final HttpServletResponse response) throws IOException {
@@ -314,7 +294,9 @@ public class CellHandler extends ContextHandler {
      * Create a modified dataset XML by replacing the ImageLoader with an
      * {@link RemoteImageLoader} pointing to the data we are serving.
      */
-    private static String buildRemoteDatasetXML(final XmlIoSpimDataMinimal io, final SpimDataMinimal spimData, final String baseUrl) throws IOException, SpimDataException {
+    private static String buildRemoteDatasetXML(final XmlIoSpimDataMinimal io,
+                                                final SpimDataMinimal spimData,
+                                                final String baseUrl) throws IOException, SpimDataException {
         final SpimDataMinimal s = new SpimDataMinimal(spimData, new RemoteImageLoader(baseUrl, false));
         final Document doc = new Document(io.toXml(s, s.getBasePath()));
         final XMLOutputter xout = new XMLOutputter(Format.getPrettyFormat());
@@ -350,12 +332,18 @@ public class CellHandler extends ContextHandler {
     /**
      * Create PNG thumbnail file named "{@code <baseFilename>.png}".
      */
-    private static String createThumbnail(final SpimDataMinimal spimData, final String baseFilename, final String datasetName, final String thumbnailsDirectory) {
+    private static String createThumbnail(final SpimDataMinimal spimData,
+                                          final String baseFilename,
+                                          final String datasetName,
+                                          final String thumbnailsDirectory) {
         final String thumbnailFileName = thumbnailsDirectory + "/" + datasetName + ".png";
         final File thumbnailFile = new File(thumbnailFileName);
         if (!thumbnailFile.isFile()) // do not recreate thumbnail if it already exists
         {
-            final BufferedImage bi = ThumbnailGenerator.makeThumbnail(spimData, baseFilename, Constants.THUMBNAIL_WIDTH, Constants.THUMBNAIL_HEIGHT);
+            final BufferedImage bi = ThumbnailGenerator.makeThumbnail(spimData,
+                                                                      baseFilename,
+                                                                      Constants.THUMBNAIL_WIDTH,
+                                                                      Constants.THUMBNAIL_HEIGHT);
             try {
                 ImageIO.write(bi, "png", thumbnailFile);
             } catch (final IOException e) {
@@ -369,10 +357,24 @@ public class CellHandler extends ContextHandler {
     /**
      * Handle request by sending a UTF-8 string.
      */
-    private static void respondWithString(final Request baseRequest, final HttpServletResponse response, final String contentType, final String string) throws IOException {
+    private static void respondWithString(final Request baseRequest,
+                                          final HttpServletResponse response,
+                                          final String contentType,
+                                          final String string) throws IOException {
+        respondWithString(baseRequest, response, contentType, string, HttpServletResponse.SC_OK);
+    }
+
+    /**
+     * Handle request by sending a UTF-8 string.
+     */
+    private static void respondWithString(final Request baseRequest,
+                                          final HttpServletResponse response,
+                                          final String contentType,
+                                          final String string,
+                                          final int httpStatus) throws IOException {
         response.setContentType(contentType);
         response.setCharacterEncoding("UTF-8");
-        response.setStatus(HttpServletResponse.SC_OK);
+        response.setStatus(httpStatus);
         baseRequest.setHandled(true);
 
         final PrintWriter ow = response.getWriter();

@@ -157,8 +157,7 @@ public class ManagerHandler extends ContextHandler {
             CellHandler ctx = null;
             try {
             	LOG.warn("We are creating CellHandler without compression params!");
-                ctx = new CellHandler(baseURL + context + "/", fileLocation, datasetName, thumbnailsDirectoryName,
-                        null, null);
+                ctx = new CellHandler(baseURL + context + "/", fileLocation, datasetName, thumbnailsDirectoryName, null);
             } catch (final SpimDataException e) {
                 LOG.warn("Failed to create a CellHandler", e);
                 e.printStackTrace();
