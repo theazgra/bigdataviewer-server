@@ -3,14 +3,8 @@ package bdv.server;
 import azgracompress.cache.ICacheFile;
 import azgracompress.cache.QuantizationCacheManager;
 import azgracompress.compression.CompressionOptions;
-import azgracompress.compression.IImageCompressor;
 import azgracompress.compression.ImageCompressor;
-import azgracompress.data.V3;
-import azgracompress.data.V3i;
 import azgracompress.io.FileInputData;
-import azgracompress.io.FlatBufferInputData;
-import azgracompress.io.InputData;
-import azgracompress.quantization.vector.VQCodebook;
 import bdv.BigDataViewer;
 import bdv.cache.CacheHints;
 import bdv.cache.LoadingStrategy;
@@ -149,6 +143,27 @@ public class CellHandler extends ContextHandler {
         }
     }
 
+    private short[] getCachedVolatileCellData(final String[] parts, final int[] cellDims) {
+        final int index = Integer.parseInt(parts[1]);
+        final int timepoint = Integer.parseInt(parts[2]);
+        final int setup = Integer.parseInt(parts[3]);
+        final int level = Integer.parseInt(parts[4]);
+        final Key key = new VolatileGlobalCellCache.Key(timepoint, setup, level, index);
+        VolatileCell<?> cell = cache.getLoadingVolatileCache().getIfPresent(key, cacheHints);
+
+        final long[] cellMin = new long[]{
+                Long.parseLong(parts[8]),
+                Long.parseLong(parts[9]),
+                Long.parseLong(parts[10])};
+        if (cell == null) {
+            cell = cache.getLoadingVolatileCache().get(key,
+                                                       cacheHints,
+                                                       new VolatileCellLoader<>(loader, timepoint, setup, level, cellDims, cellMin));
+        }
+        //noinspection unchecked
+        return ((VolatileCell<VolatileShortArray>) cell).getData().getCurrentStorageArray();
+    }
+
     @Override
     public void doHandle(final String target,
                          final Request baseRequest,
@@ -171,63 +186,52 @@ public class CellHandler extends ContextHandler {
             respondWithString(baseRequest, response, "application/xml", datasetXmlString);
             return;
         }
-
         final String[] parts = cellString.split("/");
         if (parts[0].equals("cell")) {
-            final int index = Integer.parseInt(parts[1]);
-            final int timepoint = Integer.parseInt(parts[2]);
-            final int setup = Integer.parseInt(parts[3]);
-            final int level = Integer.parseInt(parts[4]);
-            final Key key = new VolatileGlobalCellCache.Key(timepoint, setup, level, index);
-            VolatileCell<?> cell = cache.getLoadingVolatileCache().getIfPresent(key, cacheHints);
 
             final int[] cellDims = new int[]{
                     Integer.parseInt(parts[5]),
                     Integer.parseInt(parts[6]),
                     Integer.parseInt(parts[7])};
 
-            final long[] cellMin = new long[]{
-                    Long.parseLong(parts[8]),
-                    Long.parseLong(parts[9]),
-                    Long.parseLong(parts[10])};
-            if (cell == null) {
-                cell = cache.getLoadingVolatileCache().get(key,
-                                                           cacheHints,
-                                                           new VolatileCellLoader<>(loader,
-                                                                                    timepoint,
-                                                                                    setup,
-                                                                                    level,
-                                                                                    cellDims,
-                                                                                    cellMin));
-            }
-
-
-            @SuppressWarnings("unchecked")
-            short[] data = ((VolatileCell<VolatileShortArray>) cell).getData().getCurrentStorageArray();
+            final short[] data = getCachedVolatileCellData(parts, cellDims);
 
             final OutputStream responseStream = response.getOutputStream();
-            if (compressor == null || true) {
-                final byte[] buf = new byte[2 * data.length];
-                for (int i = 0, j = 0; i < data.length; i++) {
-                    final short s = data[i];
-                    buf[j++] = (byte) ((s >> 8) & 0xff);
-                    buf[j++] = (byte) (s & 0xff);
-                }
-                response.setContentLength(buf.length);
-                responseStream.write(buf);
-            } else {
-                // TODO(Moravec): Implement.
+
+            final byte[] buf = new byte[2 * data.length];
+            for (int i = 0, j = 0; i < data.length; i++) {
+                final short s = data[i];
+                buf[j++] = (byte) ((s >> 8) & 0xff);
+                buf[j++] = (byte) (s & 0xff);
             }
+            response.setContentLength(buf.length);
+            responseStream.write(buf);
+
             responseStream.close();
 
             response.setContentType("application/octet-stream");
             response.setStatus(HttpServletResponse.SC_OK);
             baseRequest.setHandled(true);
 
+        } else if (parts[0].equals("cell_qcmp")) {
+            final int[] cellDims = new int[]{Integer.parseInt(parts[5]), Integer.parseInt(parts[6]), Integer.parseInt(parts[7])};
+
+            final short[] data = getCachedVolatileCellData(parts, cellDims);
+            final OutputStream responseStream = response.getOutputStream();
+            assert (compressor != null);
+
+            final int contentLength = compressor.streamCompress(responseStream);
+            responseStream.close();
+            response.setContentLength(contentLength);
+
+            response.setContentType("application/octet-stream");
+            response.setStatus(HttpServletResponse.SC_OK);
+            baseRequest.setHandled(true);
         } else if (parts[0].equals("init")) {
             respondWithString(baseRequest, response, "application/json", metadataJson);
         } else if (parts[0].equals("init_qcmp")) {
             if (compressor == null) {
+                LOG.info("QCMP initialization request was refused, QCMP compression is not enabled.");
                 respondWithString(baseRequest, response,
                                   "text/plain", "QCMP Compression wasn't enabled on BigDataViewer server.",
                                   HttpServletResponse.SC_BAD_REQUEST);
