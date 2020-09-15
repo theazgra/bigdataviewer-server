@@ -4,7 +4,11 @@ import azgracompress.cache.ICacheFile;
 import azgracompress.cache.QuantizationCacheManager;
 import azgracompress.compression.CompressionOptions;
 import azgracompress.compression.ImageCompressor;
+import azgracompress.data.V3i;
 import azgracompress.io.FileInputData;
+import azgracompress.io.FlatBufferInputData;
+import azgracompress.io.InputData;
+import azgracompress.io.MemoryOutputStream;
 import bdv.BigDataViewer;
 import bdv.cache.CacheHints;
 import bdv.cache.LoadingStrategy;
@@ -97,6 +101,7 @@ public class CellHandler extends ContextHandler {
     private final CompressionOptions compressionParams;
     private ICacheFile compressionCacheFile = null;
     private ImageCompressor compressor = null;
+    private MemoryOutputStream cachedCompressionStream = null;
 
     public CellHandler(final String baseUrl, final String xmlFilename, final String datasetName, final String thumbnailsDirectory,
                        final CompressionOptions compressionParams) throws SpimDataException, IOException {
@@ -129,18 +134,17 @@ public class CellHandler extends ContextHandler {
     private void initializeCompression() {
         if (compressionParams == null)
             return;
-
         this.compressionParams.setInputDataInfo(new FileInputData(this.baseFilename));
-        compressor = new ImageCompressor(compressionParams);
-
         QuantizationCacheManager qcm = new QuantizationCacheManager(compressionParams.getCodebookCacheFolder());
         this.compressionCacheFile = qcm.loadCacheFile(compressionParams);
-        if (compressionCacheFile != null) {
-
-            LOG.info("CellHandler loaded codebook cache file. '" + compressionCacheFile.toString() + "'");
-            System.out.println("\u001b[33mCellHandler::initializeCompression() loaded codebook cache file. '" +
-                                       compressionCacheFile.toString() + "'\u001b[0m");
+        if (compressionCacheFile == null) {
+            return;
         }
+        LOG.info("CellHandler loaded codebook cache file. '" + compressionCacheFile + "'");
+        System.out.println("\u001b[33mCellHandler::initializeCompression() loaded codebook cache file for: " + baseFilename + "\u001b[0m");
+
+        compressor = new ImageCompressor(compressionParams, compressionCacheFile);
+        cachedCompressionStream = new MemoryOutputStream(4096);
     }
 
     private short[] getCachedVolatileCellData(final String[] parts, final int[] cellDims) {
@@ -162,6 +166,10 @@ public class CellHandler extends ContextHandler {
         }
         //noinspection unchecked
         return ((VolatileCell<VolatileShortArray>) cell).getData().getCurrentStorageArray();
+    }
+
+    private FlatBufferInputData createInputDataObject(final short[] data, final int[] cellDims) {
+        return new FlatBufferInputData(data, new V3i(cellDims[0], cellDims[1], cellDims[2]), InputData.PixelType.Gray16, this.baseFilename);
     }
 
     @Override
@@ -217,12 +225,17 @@ public class CellHandler extends ContextHandler {
             final int[] cellDims = new int[]{Integer.parseInt(parts[5]), Integer.parseInt(parts[6]), Integer.parseInt(parts[7])};
 
             final short[] data = getCachedVolatileCellData(parts, cellDims);
-            final OutputStream responseStream = response.getOutputStream();
             assert (compressor != null);
 
-            final int contentLength = compressor.streamCompress(responseStream);
-            responseStream.close();
-            response.setContentLength(contentLength);
+            compressor.setInputData(createInputDataObject(data, cellDims));
+
+            cachedCompressionStream.reset();
+            final int compressedContentLength = compressor.streamCompressChunk(cachedCompressionStream);
+            response.setContentLength(compressedContentLength);
+
+            try (OutputStream responseStream = response.getOutputStream()) {
+                responseStream.write(cachedCompressionStream.getBuffer(), 0, cachedCompressionStream.getCurrentBufferLength());
+            }
 
             response.setContentType("application/octet-stream");
             response.setStatus(HttpServletResponse.SC_OK);
@@ -241,6 +254,7 @@ public class CellHandler extends ContextHandler {
             try (DataOutputStream dos = new DataOutputStream(response.getOutputStream())) {
                 compressionCacheFile.writeToStream(dos);
             }
+            response.getOutputStream().close();
 
             response.setContentType("application/octet-stream");
             response.setStatus(HttpServletResponse.SC_OK);
