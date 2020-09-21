@@ -46,6 +46,8 @@ import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Stack;
+import java.util.concurrent.locks.ReentrantLock;
 
 public class CellHandler extends ContextHandler {
     private long transferedDataSize = 0;
@@ -99,9 +101,10 @@ public class CellHandler extends ContextHandler {
      * Compression stuff.
      */
     private final CompressionOptions compressionParams;
-    private ICacheFile compressionCacheFile = null;
     private ImageCompressor compressor = null;
-    private MemoryOutputStream cachedCompressionStream = null;
+    private Stack<MemoryOutputStream> cachedBuffers = null;
+    private ICacheFile compressionCacheFile = null;
+    private final int INITIAL_BUFFER_SIZE = 2048;
 
     public CellHandler(final String baseUrl, final String xmlFilename, final String datasetName, final String thumbnailsDirectory,
                        final CompressionOptions compressionParams) throws SpimDataException, IOException {
@@ -143,8 +146,27 @@ public class CellHandler extends ContextHandler {
         LOG.info("CellHandler loaded codebook cache file. '" + compressionCacheFile + "'");
         System.out.println("\u001b[33mCellHandler::initializeCompression() loaded codebook cache file for: " + baseFilename + "\u001b[0m");
 
+        final int initialCompressionCacheSize = 10;
+
         compressor = new ImageCompressor(compressionParams, compressionCacheFile);
-        cachedCompressionStream = new MemoryOutputStream(4096);
+        cachedBuffers = new Stack<>();
+        for (int i = 0; i < initialCompressionCacheSize; i++) {
+            cachedBuffers.push(new MemoryOutputStream(INITIAL_BUFFER_SIZE));
+        }
+    }
+
+
+    private synchronized MemoryOutputStream getCachedCompressionBuffer() {
+        if (!cachedBuffers.empty()) {
+            return cachedBuffers.pop();
+        } else {
+            return new MemoryOutputStream(INITIAL_BUFFER_SIZE);
+        }
+    }
+
+    private synchronized void returnBufferForReuse(MemoryOutputStream buffer) {
+        buffer.reset();
+        cachedBuffers.push(buffer);
     }
 
     private short[] getCachedVolatileCellData(final String[] parts, final int[] cellDims) {
@@ -227,19 +249,31 @@ public class CellHandler extends ContextHandler {
             final short[] data = getCachedVolatileCellData(parts, cellDims);
             assert (compressor != null);
 
-            compressor.setInputData(createInputDataObject(data, cellDims));
 
-            cachedCompressionStream.reset();
-            final int compressedContentLength = compressor.streamCompressChunk(cachedCompressionStream);
+            final FlatBufferInputData inputData = createInputDataObject(data, cellDims);
+
+            MemoryOutputStream cellCompressionStream = getCachedCompressionBuffer();
+            final int compressedContentLength = compressor.streamCompressChunk(cellCompressionStream, inputData);
             response.setContentLength(compressedContentLength);
 
             try (OutputStream responseStream = response.getOutputStream()) {
-                responseStream.write(cachedCompressionStream.getBuffer(), 0, cachedCompressionStream.getCurrentBufferLength());
+                responseStream.write(cellCompressionStream.getBuffer(), 0, cellCompressionStream.getCurrentBufferLength());
             }
+
+            assert (cellCompressionStream.getCurrentBufferLength() == compressedContentLength) :
+                    "compressor.streamCompressChunk() is not equal to cachedCompressionStream.getCurrentBufferLength()";
+
+            if (cellCompressionStream.getCurrentBufferLength() != compressedContentLength) {
+                System.err.printf("stream size\t%d\nreported size\t%d\n\n",
+                                  cellCompressionStream.getCurrentBufferLength(),
+                                  compressedContentLength);
+            }
+
 
             response.setContentType("application/octet-stream");
             response.setStatus(HttpServletResponse.SC_OK);
             baseRequest.setHandled(true);
+            returnBufferForReuse(cellCompressionStream);
         } else if (parts[0].equals("init")) {
             respondWithString(baseRequest, response, "application/json", metadataJson);
         } else if (parts[0].equals("init_qcmp")) {
