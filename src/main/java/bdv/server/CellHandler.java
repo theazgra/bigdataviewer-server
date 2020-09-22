@@ -47,7 +47,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Stack;
-import java.util.concurrent.locks.ReentrantLock;
 
 public class CellHandler extends ContextHandler {
     private long transferedDataSize = 0;
@@ -141,10 +140,10 @@ public class CellHandler extends ContextHandler {
         QuantizationCacheManager qcm = new QuantizationCacheManager(compressionParams.getCodebookCacheFolder());
         this.compressionCacheFile = qcm.loadCacheFile(compressionParams);
         if (compressionCacheFile == null) {
+            LOG.warn("CellHandler: Didn't find cached codebook for " + this.baseFilename);
             return;
         }
-        LOG.info("CellHandler loaded codebook cache file. '" + compressionCacheFile + "'");
-        System.out.println("\u001b[33mCellHandler::initializeCompression() loaded codebook cache file for: " + baseFilename + "\u001b[0m");
+        LOG.info(String.format("CellHandler: Loaded cached codebook file. '%s' for %s", compressionCacheFile, this.baseFilename));
 
         final int initialCompressionCacheSize = 10;
 
@@ -254,11 +253,12 @@ public class CellHandler extends ContextHandler {
 
             MemoryOutputStream cellCompressionStream = getCachedCompressionBuffer();
             final int compressedContentLength = compressor.streamCompressChunk(cellCompressionStream, inputData);
-            response.setContentLength(compressedContentLength);
 
+            response.setContentLength(compressedContentLength);
             try (OutputStream responseStream = response.getOutputStream()) {
                 responseStream.write(cellCompressionStream.getBuffer(), 0, cellCompressionStream.getCurrentBufferLength());
             }
+
 
             assert (cellCompressionStream.getCurrentBufferLength() == compressedContentLength) :
                     "compressor.streamCompressChunk() is not equal to cachedCompressionStream.getCurrentBufferLength()";
