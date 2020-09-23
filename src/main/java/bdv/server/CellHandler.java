@@ -49,11 +49,11 @@ import java.nio.file.Paths;
 import java.util.Stack;
 
 public class CellHandler extends ContextHandler {
-    private long transferedDataSize = 0;
+    private final long transferedDataSize = 0;
 
     private static final org.eclipse.jetty.util.log.Logger LOG = Log.getLogger(CellHandler.class);
 
-    private int counter = 0;
+    private final int counter = 0;
     private final VolatileGlobalCellCache cache;
 
     private final Hdf5VolatileShortArrayLoader loader;
@@ -102,8 +102,15 @@ public class CellHandler extends ContextHandler {
     private final CompressionOptions compressionParams;
     private ImageCompressor compressor = null;
     private Stack<MemoryOutputStream> cachedBuffers = null;
-    private ICacheFile compressionCacheFile = null;
+    private ICacheFile cachedCodebook = null;
     private final int INITIAL_BUFFER_SIZE = 2048;
+    private long accumulation = 0;
+
+
+    private synchronized long addToAccumulation(final int value) {
+        accumulation += value;
+        return accumulation;
+    }
 
     public CellHandler(final String baseUrl, final String xmlFilename, final String datasetName, final String thumbnailsDirectory,
                        final CompressionOptions compressionParams) throws SpimDataException, IOException {
@@ -137,17 +144,17 @@ public class CellHandler extends ContextHandler {
         if (compressionParams == null)
             return;
         this.compressionParams.setInputDataInfo(new FileInputData(this.baseFilename));
-        QuantizationCacheManager qcm = new QuantizationCacheManager(compressionParams.getCodebookCacheFolder());
-        this.compressionCacheFile = qcm.loadCacheFile(compressionParams);
-        if (compressionCacheFile == null) {
+        final QuantizationCacheManager qcm = new QuantizationCacheManager(compressionParams.getCodebookCacheFolder());
+        this.cachedCodebook = qcm.loadCacheFile(compressionParams);
+        if (cachedCodebook == null) {
             LOG.warn("CellHandler: Didn't find cached codebook for " + this.baseFilename);
             return;
         }
-        LOG.info(String.format("CellHandler: Loaded cached codebook file. '%s' for %s", compressionCacheFile, this.baseFilename));
+        LOG.info(String.format("CellHandler: Loaded cached codebook file. '%s' for %s", cachedCodebook, this.baseFilename));
 
         final int initialCompressionCacheSize = 10;
 
-        compressor = new ImageCompressor(compressionParams, compressionCacheFile);
+        compressor = new ImageCompressor(compressionParams, cachedCodebook);
         cachedBuffers = new Stack<>();
         for (int i = 0; i < initialCompressionCacheSize; i++) {
             cachedBuffers.push(new MemoryOutputStream(INITIAL_BUFFER_SIZE));
@@ -163,7 +170,7 @@ public class CellHandler extends ContextHandler {
         }
     }
 
-    private synchronized void returnBufferForReuse(MemoryOutputStream buffer) {
+    private synchronized void returnBufferForReuse(final MemoryOutputStream buffer) {
         buffer.reset();
         cachedBuffers.push(buffer);
     }
@@ -191,6 +198,20 @@ public class CellHandler extends ContextHandler {
 
     private FlatBufferInputData createInputDataObject(final short[] data, final int[] cellDims) {
         return new FlatBufferInputData(data, new V3i(cellDims[0], cellDims[1], cellDims[2]), InputData.PixelType.Gray16, this.baseFilename);
+    }
+
+    private void responseWithShortArray(final HttpServletResponse response, final short[] data) throws IOException {
+        final OutputStream responseStream = response.getOutputStream();
+
+        final byte[] buf = new byte[2 * data.length];
+        for (int i = 0, j = 0; i < data.length; i++) {
+            final short s = data[i];
+            buf[j++] = (byte) ((s >> 8) & 0xff);
+            buf[j++] = (byte) (s & 0xff);
+        }
+        response.setContentLength(buf.length);
+        responseStream.write(buf);
+        responseStream.close();
     }
 
     @Override
@@ -225,18 +246,7 @@ public class CellHandler extends ContextHandler {
 
             final short[] data = getCachedVolatileCellData(parts, cellDims);
 
-            final OutputStream responseStream = response.getOutputStream();
-
-            final byte[] buf = new byte[2 * data.length];
-            for (int i = 0, j = 0; i < data.length; i++) {
-                final short s = data[i];
-                buf[j++] = (byte) ((s >> 8) & 0xff);
-                buf[j++] = (byte) (s & 0xff);
-            }
-            response.setContentLength(buf.length);
-            responseStream.write(buf);
-
-            responseStream.close();
+            responseWithShortArray(response, data);
 
             response.setContentType("application/octet-stream");
             response.setStatus(HttpServletResponse.SC_OK);
@@ -251,13 +261,35 @@ public class CellHandler extends ContextHandler {
 
             final FlatBufferInputData inputData = createInputDataObject(data, cellDims);
 
-            MemoryOutputStream cellCompressionStream = getCachedCompressionBuffer();
+            final MemoryOutputStream cellCompressionStream = getCachedCompressionBuffer();
             final int compressedContentLength = compressor.streamCompressChunk(cellCompressionStream, inputData);
 
+            //            // DEBUG decompress in place.
+            //            if (true) {
+            //                final byte[] buffer = cellCompressionStream.getBuffer();
+            //                final int bufferLength = cellCompressionStream.getCurrentBufferLength();
+            //                ImageDecompressor decompressor = new ImageDecompressor(cachedCodebook);
+            //                short[] decompressedData = null;
+            //                try (InputStream is = new BufferedInputStream(new ByteArrayInputStream(buffer, 0, bufferLength))) {
+            //                    decompressedData = decompressor.decompressStream(is, bufferLength);
+            //                } catch (ImageDecompressionException e) {
+            //                    e.printStackTrace();
+            //                }
+            //                assert (decompressedData != null);
+            //                responseWithShortArray(response, decompressedData);
+            //                return;
+            //            }
+
             response.setContentLength(compressedContentLength);
-            try (OutputStream responseStream = response.getOutputStream()) {
+            try (final OutputStream responseStream = response.getOutputStream()) {
                 responseStream.write(cellCompressionStream.getBuffer(), 0, cellCompressionStream.getCurrentBufferLength());
             }
+
+            final long currentlySent = addToAccumulation(compressedContentLength);
+            LOG.info(String.format("Sending %dB instead of %dB. Currently sent %dB",
+                                   compressedContentLength,
+                                   (data.length * 2),
+                                   currentlySent));
 
 
             assert (cellCompressionStream.getCurrentBufferLength() == compressedContentLength) :
@@ -285,8 +317,8 @@ public class CellHandler extends ContextHandler {
                 return;
             }
 
-            try (DataOutputStream dos = new DataOutputStream(response.getOutputStream())) {
-                compressionCacheFile.writeToStream(dos);
+            try (final DataOutputStream dos = new DataOutputStream(response.getOutputStream())) {
+                cachedCodebook.writeToStream(dos);
             }
             response.getOutputStream().close();
 
@@ -373,7 +405,7 @@ public class CellHandler extends ContextHandler {
                 final StringWriter sw = new StringWriter();
                 xout.output(doc, sw);
                 return sw.toString();
-            } catch (JDOMException | IOException e) {
+            } catch (final JDOMException | IOException e) {
                 LOG.warn("Could not read settings file \"" + settings + "\"");
                 LOG.warn(e.getMessage());
             }
