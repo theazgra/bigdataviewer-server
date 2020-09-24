@@ -9,6 +9,7 @@ import azgracompress.io.FileInputData;
 import azgracompress.io.FlatBufferInputData;
 import azgracompress.io.InputData;
 import azgracompress.io.MemoryOutputStream;
+import azgracompress.utilities.Stopwatch;
 import bdv.BigDataViewer;
 import bdv.cache.CacheHints;
 import bdv.cache.LoadingStrategy;
@@ -105,11 +106,17 @@ public class CellHandler extends ContextHandler {
     private ICacheFile cachedCodebook = null;
     private final int INITIAL_BUFFER_SIZE = 2048;
     private long accumulation = 0;
+    private long uncompressedAccumulation = 0;
 
 
     private synchronized long addToAccumulation(final int value) {
         accumulation += value;
         return accumulation;
+    }
+
+    private synchronized long addToUncompressedAccumulation(final int value) {
+        uncompressedAccumulation += value;
+        return uncompressedAccumulation;
     }
 
     public CellHandler(final String baseUrl, final String xmlFilename, final String datasetName, final String thumbnailsDirectory,
@@ -253,44 +260,20 @@ public class CellHandler extends ContextHandler {
             baseRequest.setHandled(true);
 
         } else if (parts[0].equals("cell_qcmp")) {
+            final Stopwatch stopwatch = Stopwatch.startNew();
             final int[] cellDims = new int[]{Integer.parseInt(parts[5]), Integer.parseInt(parts[6]), Integer.parseInt(parts[7])};
 
             final short[] data = getCachedVolatileCellData(parts, cellDims);
             assert (compressor != null);
 
-
             final FlatBufferInputData inputData = createInputDataObject(data, cellDims);
-
             final MemoryOutputStream cellCompressionStream = getCachedCompressionBuffer();
             final int compressedContentLength = compressor.streamCompressChunk(cellCompressionStream, inputData);
-
-            //            // DEBUG decompress in place.
-            //            if (true) {
-            //                final byte[] buffer = cellCompressionStream.getBuffer();
-            //                final int bufferLength = cellCompressionStream.getCurrentBufferLength();
-            //                ImageDecompressor decompressor = new ImageDecompressor(cachedCodebook);
-            //                short[] decompressedData = null;
-            //                try (InputStream is = new BufferedInputStream(new ByteArrayInputStream(buffer, 0, bufferLength))) {
-            //                    decompressedData = decompressor.decompressStream(is, bufferLength);
-            //                } catch (ImageDecompressionException e) {
-            //                    e.printStackTrace();
-            //                }
-            //                assert (decompressedData != null);
-            //                responseWithShortArray(response, decompressedData);
-            //                return;
-            //            }
 
             response.setContentLength(compressedContentLength);
             try (final OutputStream responseStream = response.getOutputStream()) {
                 responseStream.write(cellCompressionStream.getBuffer(), 0, cellCompressionStream.getCurrentBufferLength());
             }
-
-            final long currentlySent = addToAccumulation(compressedContentLength);
-            LOG.info(String.format("Sending %dB instead of %dB. Currently sent %dB",
-                                   compressedContentLength,
-                                   (data.length * 2),
-                                   currentlySent));
-
 
             assert (cellCompressionStream.getCurrentBufferLength() == compressedContentLength) :
                     "compressor.streamCompressChunk() is not equal to cachedCompressionStream.getCurrentBufferLength()";
@@ -306,6 +289,18 @@ public class CellHandler extends ContextHandler {
             response.setStatus(HttpServletResponse.SC_OK);
             baseRequest.setHandled(true);
             returnBufferForReuse(cellCompressionStream);
+            stopwatch.stop();
+            if (compressionParams.isVerbose()) {
+                final long currentlySent = addToAccumulation(compressedContentLength);
+                final long uncompressedWouldSent = addToUncompressedAccumulation(data.length * 2);
+                LOG.info(String.format("Sending %dB instead of %dB. Currently sent %dB instead of %dB. Handler finished in %s",
+                                       compressedContentLength,
+                                       (data.length * 2),
+                                       currentlySent,
+                                       uncompressedWouldSent,
+                                       stopwatch.getElapsedTimeString()));
+
+            }
         } else if (parts[0].equals("init")) {
             respondWithString(baseRequest, response, "application/json", metadataJson);
         } else if (parts[0].equals("init_qcmp")) {

@@ -198,6 +198,7 @@ public class BigDataServer {
         options.addOption(new OptionWithOrder(CliConstants.createSQOption(), ++optionOrder));
         options.addOption(new OptionWithOrder(CliConstants.createVQOption(), ++optionOrder));
         options.addOption(new OptionWithOrder(CliConstants.createBitsOption(), ++optionOrder));
+        options.addOption(new OptionWithOrder(CliConstants.createVerboseOption(false), ++optionOrder));
 
 
         if (Constants.ENABLE_EXPERIMENTAL_FEATURES) {
@@ -225,19 +226,19 @@ public class BigDataServer {
 
 
             final boolean enableQcmpCompression = cmd.hasOption(ENABLE_COMPRESSION);
-            CompressionOptions compressionOptions = new CompressionOptions();
+            final CompressionOptions compressionOptions = new CompressionOptions();
             if (enableQcmpCompression) {
                 compressionOptions.setQuantizationType(QuantizationType.Invalid);
                 if (cmd.hasOption(CliConstants.SCALAR_QUANTIZATION_LONG))
                     compressionOptions.setQuantizationType(QuantizationType.Scalar);
                 else if (cmd.hasOption(CliConstants.VECTOR_QUANTIZATION_LONG)) {
                     final String vqValue = cmd.getOptionValue(CliConstants.VECTOR_QUANTIZATION_LONG);
-                    Optional<V2i> maybeV2 = ParseUtils.tryParseV2i(vqValue, 'x');
+                    final Optional<V2i> maybeV2 = ParseUtils.tryParseV2i(vqValue, 'x');
                     if (maybeV2.isPresent()) {
                         compressionOptions.setQuantizationType(QuantizationType.Vector2D);
                         compressionOptions.setQuantizationVector(new V3i(maybeV2.get().getX(), maybeV2.get().getY(), 1));
                     } else {
-                        Optional<V3i> maybeV3 = ParseUtils.tryParseV3i(vqValue, 'x');
+                        final Optional<V3i> maybeV3 = ParseUtils.tryParseV3i(vqValue, 'x');
                         if (maybeV3.isPresent()) {
                             compressionOptions.setQuantizationType(QuantizationType.Vector3D);
                             compressionOptions.setQuantizationVector(maybeV3.get());
@@ -248,11 +249,14 @@ public class BigDataServer {
                     throw new ParseException("Invalid quantization type.");
                 }
 
+                // NOTE(Moravec): Test if using more workers make any sense. Since the server is already handling multiple requests.
+                compressionOptions.setWorkerCount(1);
                 compressionOptions.setCodebookType(CompressionOptions.CodebookType.Global);
                 compressionOptions.setCodebookCacheFolder(cmd.getOptionValue(CliConstants.CODEBOOK_CACHE_FOLDER_LONG));
                 compressionOptions.setBitsPerCodebookIndex(Integer.parseInt(cmd.getOptionValue(CliConstants.BITS_LONG)));
+                compressionOptions.setVerbose(cmd.hasOption(CliConstants.VERBOSE_LONG));
 
-                StringBuilder compressionReport = new StringBuilder();
+                final StringBuilder compressionReport = new StringBuilder();
                 compressionReport.append("\u001b[33m");
                 compressionReport.append("Quantization type: ");
                 switch (compressionOptions.getQuantizationType()) {
@@ -273,6 +277,7 @@ public class BigDataServer {
                 compressionReport.append('\n');
                 compressionReport.append("Bits per codebook index: ").append(compressionOptions.getBitsPerCodebookIndex()).append('\n');
                 compressionReport.append("Codebook cache folder: ").append(compressionOptions.getCodebookCacheFolder()).append('\n');
+                compressionReport.append("Verbose mode: ").append(compressionOptions.isVerbose() ? "ON" : "OFF").append('\n');
                 compressionReport.append("\u001b[0m");
 
                 System.out.println(compressionReport.toString());
@@ -343,8 +348,8 @@ public class BigDataServer {
                 } else if (y instanceof OptionWithOrder) {
                     return -1;
                 } else {
-                    Option opt1 = (Option) x;
-                    Option opt2 = (Option) y;
+                    final Option opt1 = (Option) x;
+                    final Option opt2 = (Option) y;
                     return opt1.getOpt().compareToIgnoreCase(opt2.getOpt());
                 }
             });
