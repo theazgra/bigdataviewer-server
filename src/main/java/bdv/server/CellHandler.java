@@ -47,6 +47,8 @@ import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Stack;
 
 public class CellHandler extends ContextHandler {
@@ -101,9 +103,11 @@ public class CellHandler extends ContextHandler {
      * Compression stuff.
      */
     private final CompressionOptions compressionParams;
-    private ImageCompressor compressor = null;
+
+    private ArrayList<ICacheFile> cachedCodebooks = null;
+    private HashMap<Integer, ImageCompressor> compressors = null;
+
     private Stack<MemoryOutputStream> cachedBuffers = null;
-    private ICacheFile cachedCodebook = null;
     private final int INITIAL_BUFFER_SIZE = 2048;
     private long accumulation = 0;
     private long uncompressedAccumulation = 0;
@@ -152,16 +156,27 @@ public class CellHandler extends ContextHandler {
             return;
         this.compressionParams.setInputDataInfo(new FileInputData(this.baseFilename));
         final QuantizationCacheManager qcm = new QuantizationCacheManager(compressionParams.getCodebookCacheFolder());
-        this.cachedCodebook = qcm.loadCacheFile(compressionParams);
-        if (cachedCodebook == null) {
-            LOG.warn("CellHandler: Didn't find cached codebook for " + this.baseFilename);
+
+        cachedCodebooks = qcm.loadAvailableCacheFiles(compressionParams);
+        if (cachedCodebooks.isEmpty()) {
+            LOG.warn("Didn't find any cached codebook for " + this.baseFilename);
             return;
         }
-        LOG.info(String.format("CellHandler: Loaded cached codebook file. '%s' for %s", cachedCodebook, this.baseFilename));
+        LOG.info(String.format("Found %d codebooks for %s.", cachedCodebooks.size(), this.baseFilename));
+        compressors = new HashMap<>(cachedCodebooks.size());
+
+        for (final ICacheFile cacheFile : cachedCodebooks) {
+            LOG.info(String.format("  Loaded codebook of size %d. '%s'", cacheFile.getHeader().getCodebookSize(), cacheFile));
+
+            final int bitsPerCodebookIndex = cacheFile.getHeader().getBitsPerCodebookIndex();
+            final CompressionOptions compressorOptions = compressionParams.createClone();
+            assert (compressorOptions != compressionParams);
+
+            compressorOptions.setBitsPerCodebookIndex(bitsPerCodebookIndex);
+            compressors.put(bitsPerCodebookIndex, new ImageCompressor(compressorOptions, cacheFile));
+        }
 
         final int initialCompressionCacheSize = 10;
-
-        compressor = new ImageCompressor(compressionParams, cachedCodebook);
         cachedBuffers = new Stack<>();
         for (int i = 0; i < initialCompressionCacheSize; i++) {
             cachedBuffers.push(new MemoryOutputStream(INITIAL_BUFFER_SIZE));
@@ -264,11 +279,12 @@ public class CellHandler extends ContextHandler {
             final int[] cellDims = new int[]{Integer.parseInt(parts[5]), Integer.parseInt(parts[6]), Integer.parseInt(parts[7])};
 
             final short[] data = getCachedVolatileCellData(parts, cellDims);
-            assert (compressor != null);
+            assert (compressors != null && !compressors.isEmpty());
 
             final FlatBufferInputData inputData = createInputDataObject(data, cellDims);
             final MemoryOutputStream cellCompressionStream = getCachedCompressionBuffer();
-            final int compressedContentLength = compressor.streamCompressChunk(cellCompressionStream, inputData);
+            // TODO(Moravec): Choose compressor based on `level`.
+            final int compressedContentLength = compressors.get(8).streamCompressChunk(cellCompressionStream, inputData);
 
             response.setContentLength(compressedContentLength);
             try (final OutputStream responseStream = response.getOutputStream()) {
@@ -304,23 +320,28 @@ public class CellHandler extends ContextHandler {
         } else if (parts[0].equals("init")) {
             respondWithString(baseRequest, response, "application/json", metadataJson);
         } else if (parts[0].equals("init_qcmp")) {
-            if (compressor == null) {
-                LOG.info("QCMP initialization request was refused, QCMP compression is not enabled.");
-                respondWithString(baseRequest, response,
-                                  "text/plain", "QCMP Compression wasn't enabled on BigDataViewer server.",
-                                  HttpServletResponse.SC_BAD_REQUEST);
-                return;
-            }
-
-            try (final DataOutputStream dos = new DataOutputStream(response.getOutputStream())) {
-                cachedCodebook.writeToStream(dos);
-            }
-            response.getOutputStream().close();
-
-            response.setContentType("application/octet-stream");
-            response.setStatus(HttpServletResponse.SC_OK);
-            baseRequest.setHandled(true);
+            respondWithCompressionInfo(baseRequest, response);
         }
+    }
+
+    private void respondWithCompressionInfo(final Request baseRequest, final HttpServletResponse response) throws IOException {
+        if (cachedCodebooks == null || cachedCodebooks.isEmpty()) {
+            LOG.info("QCMP initialization request was refused, QCMP compression is not enabled.");
+            respondWithString(baseRequest, response,
+                              "text/plain", "QCMP Compression wasn't enabled on BigDataViewer server.",
+                              HttpServletResponse.SC_BAD_REQUEST);
+            return;
+        }
+
+        try (final DataOutputStream dos = new DataOutputStream(response.getOutputStream())) {
+            dos.writeByte(cachedCodebooks.size());
+            for (final ICacheFile cacheFile : cachedCodebooks) {
+                cacheFile.writeToStream(dos);
+            }
+        } // Stream gets closed here.
+        response.setContentType("application/octet-stream");
+        response.setStatus(HttpServletResponse.SC_OK);
+        baseRequest.setHandled(true);
     }
 
     private void provideThumbnail(final Request baseRequest, final HttpServletResponse response) throws IOException {
