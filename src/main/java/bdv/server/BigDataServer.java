@@ -75,7 +75,19 @@ public class BigDataServer {
                               new HashMap<String, String>(),
                               thumbnailDirectory,
                               enableManagerContext,
-                              new CompressionOptions());
+                              new ExtendedCompressionOptions());
+    }
+
+    public static class ExtendedCompressionOptions extends CompressionOptions {
+        private int compressFromMipmapLevel;
+
+        public int getCompressFromMipmapLevel() {
+            return compressFromMipmapLevel;
+        }
+
+        public void setCompressFromMipmapLevel(final int compressFromMipmapLevel) {
+            this.compressFromMipmapLevel = compressFromMipmapLevel;
+        }
     }
 
     /**
@@ -93,14 +105,13 @@ public class BigDataServer {
 
         private final String thumbnailDirectory;
 
-
-        private final CompressionOptions compressionParam;
+        private final ExtendedCompressionOptions compressionParam;
 
         private final boolean enableManagerContext;
 
         Parameters(final int port, final String hostname, final Map<String, String> datasetNameToXml,
                    final String thumbnailDirectory, final boolean enableManagerContext,
-                   final CompressionOptions customCompressionParameters) {
+                   final ExtendedCompressionOptions customCompressionParameters) {
             this.port = port;
             this.hostname = hostname;
             this.datasetNameToXml = datasetNameToXml;
@@ -134,7 +145,7 @@ public class BigDataServer {
             return enableManagerContext;
         }
 
-        public CompressionOptions getCompressionParams() {
+        public ExtendedCompressionOptions getCompressionParams() {
             return compressionParam;
         }
     }
@@ -146,6 +157,7 @@ public class BigDataServer {
         final Options options = new Options();
 
         final String cmdLineSyntax = "BigDataServer [OPTIONS] [NAME XML] ...\n";
+        final String CompressFromKey = "compressFrom";
 
         final String description =
                 "Serves one or more XML/HDF5 datasets for remote access over HTTP.\n" +
@@ -197,8 +209,9 @@ public class BigDataServer {
         options.addOption(new OptionWithOrder(CliConstants.createCBCMethod(), ++optionOrder));
         options.addOption(new OptionWithOrder(CliConstants.createSQOption(), ++optionOrder));
         options.addOption(new OptionWithOrder(CliConstants.createVQOption(), ++optionOrder));
-        options.addOption(new OptionWithOrder(CliConstants.createBitsOption(), ++optionOrder));
         options.addOption(new OptionWithOrder(CliConstants.createVerboseOption(false), ++optionOrder));
+        options.addOption(new OptionWithOrder(new Option(CompressFromKey, true, "Level from which the compression is enabled."),
+                                              ++optionOrder));
 
 
         if (Constants.ENABLE_EXPERIMENTAL_FEATURES) {
@@ -226,7 +239,7 @@ public class BigDataServer {
 
 
             final boolean enableQcmpCompression = cmd.hasOption(ENABLE_COMPRESSION);
-            final CompressionOptions compressionOptions = new CompressionOptions();
+            final ExtendedCompressionOptions compressionOptions = new ExtendedCompressionOptions();
             if (enableQcmpCompression) {
                 compressionOptions.setQuantizationType(QuantizationType.Invalid);
                 if (cmd.hasOption(CliConstants.SCALAR_QUANTIZATION_LONG))
@@ -253,8 +266,12 @@ public class BigDataServer {
                 compressionOptions.setWorkerCount(1);
                 compressionOptions.setCodebookType(CompressionOptions.CodebookType.Global);
                 compressionOptions.setCodebookCacheFolder(cmd.getOptionValue(CliConstants.CODEBOOK_CACHE_FOLDER_LONG));
-                compressionOptions.setBitsPerCodebookIndex(Integer.parseInt(cmd.getOptionValue(CliConstants.BITS_LONG)));
                 compressionOptions.setVerbose(cmd.hasOption(CliConstants.VERBOSE_LONG));
+
+
+                if (cmd.hasOption(CompressFromKey)) {
+                    compressionOptions.setCompressFromMipmapLevel(Integer.parseInt(cmd.getOptionValue(CompressFromKey)));
+                }
 
                 final StringBuilder compressionReport = new StringBuilder();
                 compressionReport.append("\u001b[33m");
@@ -275,9 +292,9 @@ public class BigDataServer {
                 }
                 compressionReport.append(compressionOptions.getQuantizationVector().toString());
                 compressionReport.append('\n');
-                compressionReport.append("Bits per codebook index: ").append(compressionOptions.getBitsPerCodebookIndex()).append('\n');
                 compressionReport.append("Codebook cache folder: ").append(compressionOptions.getCodebookCacheFolder()).append('\n');
                 compressionReport.append("Verbose mode: ").append(compressionOptions.isVerbose() ? "ON" : "OFF").append('\n');
+                compressionReport.append("CompressFromMipmapLevel: ").append(compressionOptions.getCompressFromMipmapLevel()).append('\n');
                 compressionReport.append("\u001b[0m");
 
                 System.out.println(compressionReport.toString());

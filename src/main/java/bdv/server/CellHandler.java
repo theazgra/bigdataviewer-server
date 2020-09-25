@@ -48,6 +48,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Stack;
 
@@ -102,10 +103,11 @@ public class CellHandler extends ContextHandler {
     /**
      * Compression stuff.
      */
-    private final CompressionOptions compressionParams;
+    private final BigDataServer.ExtendedCompressionOptions compressionParams;
 
     private ArrayList<ICacheFile> cachedCodebooks = null;
     private HashMap<Integer, ImageCompressor> compressors = null;
+    private ImageCompressor lowestResCompressor = null;
 
     private Stack<MemoryOutputStream> cachedBuffers = null;
     private final int INITIAL_BUFFER_SIZE = 2048;
@@ -124,11 +126,12 @@ public class CellHandler extends ContextHandler {
     }
 
     public CellHandler(final String baseUrl, final String xmlFilename, final String datasetName, final String thumbnailsDirectory,
-                       final CompressionOptions compressionParams) throws SpimDataException, IOException {
+                       final BigDataServer.ExtendedCompressionOptions compressionParams) throws SpimDataException, IOException {
 
         final XmlIoSpimDataMinimal io = new XmlIoSpimDataMinimal();
         final SpimDataMinimal spimData = io.load(xmlFilename);
         final SequenceDescriptionMinimal seq = spimData.getSequenceDescription();
+
         final Hdf5ImageLoader imgLoader = (Hdf5ImageLoader) seq.getImgLoader();
         this.compressionParams = compressionParams;
 
@@ -142,16 +145,26 @@ public class CellHandler extends ContextHandler {
         baseFilename = xmlFilename.endsWith(".xml") ? xmlFilename.substring(0, xmlFilename.length() - ".xml".length()) : xmlFilename;
         dataSetURL = baseUrl;
 
+        final int numberOfMipmapLevels = imgLoader.getSetupImgLoader(0).numMipmapLevels();
+
         datasetXmlString = buildRemoteDatasetXML(io, spimData, baseUrl);
         metadataJson = buildMetadataJsonString(imgLoader, seq);
         settingsXmlString = buildSettingsXML(baseFilename);
         thumbnailFilename = createThumbnail(spimData, baseFilename, datasetName, thumbnailsDirectory);
 
 
-        initializeCompression();
+        initializeCompression(numberOfMipmapLevels);
     }
 
-    private void initializeCompression() {
+    private ImageCompressor getCompressorForMipmapLevel(final int mipmapLevel) {
+        assert (compressors != null && !compressors.isEmpty());
+        if (compressors.containsKey(mipmapLevel)) {
+            return compressors.get(mipmapLevel);
+        }
+        return lowestResCompressor;
+    }
+
+    private void initializeCompression(final int numberOfMipmapLevels) {
         if (compressionParams == null)
             return;
         this.compressionParams.setInputDataInfo(new FileInputData(this.baseFilename));
@@ -163,17 +176,28 @@ public class CellHandler extends ContextHandler {
             return;
         }
         LOG.info(String.format("Found %d codebooks for %s.", cachedCodebooks.size(), this.baseFilename));
-        compressors = new HashMap<>(cachedCodebooks.size());
 
-        for (final ICacheFile cacheFile : cachedCodebooks) {
-            LOG.info(String.format("  Loaded codebook of size %d. '%s'", cacheFile.getHeader().getCodebookSize(), cacheFile));
+        final int numberOfCompressors = Math.min((numberOfMipmapLevels - compressionParams.getCompressFromMipmapLevel()),
+                                                 cachedCodebooks.size());
 
-            final int bitsPerCodebookIndex = cacheFile.getHeader().getBitsPerCodebookIndex();
+        cachedCodebooks.sort(Comparator.comparingInt(obj -> obj.getHeader().getBitsPerCodebookIndex()));
+        compressors = new HashMap<>(numberOfCompressors);
+        for (int compressorIndex = 0; compressorIndex < numberOfCompressors; compressorIndex++) {
+            final ICacheFile levelCacheFile = cachedCodebooks.get((cachedCodebooks.size() - 1) - compressorIndex);
+            final int bitsPerCodebookIndex = levelCacheFile.getHeader().getBitsPerCodebookIndex();
+
             final CompressionOptions compressorOptions = compressionParams.createClone();
             assert (compressorOptions != compressionParams);
-
             compressorOptions.setBitsPerCodebookIndex(bitsPerCodebookIndex);
-            compressors.put(bitsPerCodebookIndex, new ImageCompressor(compressorOptions, cacheFile));
+
+            final ImageCompressor compressor = new ImageCompressor(compressorOptions, levelCacheFile);
+            final int actualKey = compressorIndex + compressionParams.getCompressFromMipmapLevel();
+            compressors.put(actualKey, compressor);
+            LOG.info(String.format("  Loaded codebook of size %d for mipmap level %d. '%s'",
+                                   levelCacheFile.getHeader().getCodebookSize(),
+                                   actualKey,
+                                   levelCacheFile.klass()));
+            lowestResCompressor = compressor;
         }
 
         final int initialCompressionCacheSize = 10;
@@ -197,11 +221,10 @@ public class CellHandler extends ContextHandler {
         cachedBuffers.push(buffer);
     }
 
-    private short[] getCachedVolatileCellData(final String[] parts, final int[] cellDims) {
+    private short[] getCachedVolatileCellData(final String[] parts, final int[] cellDims, final int level) {
         final int index = Integer.parseInt(parts[1]);
         final int timepoint = Integer.parseInt(parts[2]);
         final int setup = Integer.parseInt(parts[3]);
-        final int level = Integer.parseInt(parts[4]);
         final Key key = new VolatileGlobalCellCache.Key(timepoint, setup, level, index);
         VolatileCell<?> cell = cache.getLoadingVolatileCache().getIfPresent(key, cacheHints);
 
@@ -260,13 +283,13 @@ public class CellHandler extends ContextHandler {
         }
         final String[] parts = cellString.split("/");
         if (parts[0].equals("cell")) {
-
+            final int level = Integer.parseInt(parts[4]);
             final int[] cellDims = new int[]{
                     Integer.parseInt(parts[5]),
                     Integer.parseInt(parts[6]),
                     Integer.parseInt(parts[7])};
 
-            final short[] data = getCachedVolatileCellData(parts, cellDims);
+            final short[] data = getCachedVolatileCellData(parts, cellDims, level);
 
             responseWithShortArray(response, data);
 
@@ -276,15 +299,17 @@ public class CellHandler extends ContextHandler {
 
         } else if (parts[0].equals("cell_qcmp")) {
             final Stopwatch stopwatch = Stopwatch.startNew();
+            final int mipmapLevel = Integer.parseInt(parts[4]);
             final int[] cellDims = new int[]{Integer.parseInt(parts[5]), Integer.parseInt(parts[6]), Integer.parseInt(parts[7])};
 
-            final short[] data = getCachedVolatileCellData(parts, cellDims);
+            final short[] data = getCachedVolatileCellData(parts, cellDims, mipmapLevel);
             assert (compressors != null && !compressors.isEmpty());
 
             final FlatBufferInputData inputData = createInputDataObject(data, cellDims);
             final MemoryOutputStream cellCompressionStream = getCachedCompressionBuffer();
-            // TODO(Moravec): Choose compressor based on `level`.
-            final int compressedContentLength = compressors.get(8).streamCompressChunk(cellCompressionStream, inputData);
+
+            final int compressedContentLength = getCompressorForMipmapLevel(mipmapLevel).streamCompressChunk(cellCompressionStream,
+                                                                                                             inputData);
 
             response.setContentLength(compressedContentLength);
             try (final OutputStream responseStream = response.getOutputStream()) {
