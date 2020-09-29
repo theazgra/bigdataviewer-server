@@ -11,12 +11,7 @@ import azgracompress.io.InputData;
 import azgracompress.io.MemoryOutputStream;
 import azgracompress.utilities.Stopwatch;
 import bdv.BigDataViewer;
-import bdv.cache.CacheHints;
-import bdv.cache.LoadingStrategy;
-import bdv.img.cache.VolatileCell;
 import bdv.img.cache.VolatileGlobalCellCache;
-import bdv.img.cache.VolatileGlobalCellCache.Key;
-import bdv.img.cache.VolatileGlobalCellCache.VolatileCellLoader;
 import bdv.img.hdf5.Hdf5ImageLoader;
 import bdv.img.hdf5.Hdf5VolatileShortArrayLoader;
 import bdv.img.remote.AffineTransform3DJsonSerializer;
@@ -28,7 +23,11 @@ import bdv.spimdata.XmlIoSpimDataMinimal;
 import bdv.util.ThumbnailGenerator;
 import com.google.gson.GsonBuilder;
 import mpicbg.spim.data.SpimDataException;
+import net.imglib2.cache.CacheLoader;
+import net.imglib2.cache.LoaderCache;
+import net.imglib2.cache.ref.SoftRefLoaderCache;
 import net.imglib2.img.basictypeaccess.volatiles.array.VolatileShortArray;
+import net.imglib2.img.cell.Cell;
 import net.imglib2.realtransform.AffineTransform3D;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.handler.ContextHandler;
@@ -51,18 +50,71 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Stack;
+import java.util.concurrent.ExecutionException;
 
 public class CellHandler extends ContextHandler {
-    private final long transferedDataSize = 0;
-
     private static final org.eclipse.jetty.util.log.Logger LOG = Log.getLogger(CellHandler.class);
 
-    private final int counter = 0;
-    private final VolatileGlobalCellCache cache;
+    /**
+     * Key for a cell identified by timepoint, setup, level, and index
+     * (flattened spatial coordinate).
+     */
+    public static class Key {
+        private final int timepoint;
 
-    private final Hdf5VolatileShortArrayLoader loader;
+        private final int setup;
 
-    private final CacheHints cacheHints;
+        private final int level;
+
+        private final long index;
+
+        private final String[] parts;
+
+        /**
+         * Create a Key for the specified cell. Note that {@code cellDims} and
+         * {@code cellMin} are not used for {@code hashcode()/equals()}.
+         *
+         * @param timepoint timepoint coordinate of the cell
+         * @param setup     setup coordinate of the cell
+         * @param level     level coordinate of the cell
+         * @param index     index of the cell (flattened spatial coordinate of the
+         *                  cell)
+         */
+        public Key(final int timepoint, final int setup, final int level, final long index, final String[] parts) {
+            this.timepoint = timepoint;
+            this.setup = setup;
+            this.level = level;
+            this.index = index;
+            this.parts = parts;
+
+            int value = Long.hashCode(index);
+            value = 31 * value + level;
+            value = 31 * value + setup;
+            value = 31 * value + timepoint;
+            hashcode = value;
+        }
+
+        @Override
+        public boolean equals(final Object other) {
+            if (this == other)
+                return true;
+            if (!(other instanceof VolatileGlobalCellCache.Key))
+                return false;
+            final Key that = (Key) other;
+            return (this.index == that.index) && (this.timepoint == that.timepoint) && (this.setup == that.setup) && (this.level == that.level);
+        }
+
+        final int hashcode;
+
+        @Override
+        public int hashCode() {
+            return hashcode;
+        }
+    }
+
+    private final CacheLoader<Key, Cell<?>> loader;
+
+    private final LoaderCache<Key, Cell<?>> cache;
 
     /**
      * Full path of the dataset xml file this {@link CellHandler} is serving.
@@ -125,19 +177,32 @@ public class CellHandler extends ContextHandler {
         return uncompressedAccumulation;
     }
 
-    public CellHandler(final String baseUrl, final String xmlFilename, final String datasetName, final String thumbnailsDirectory,
-                       final BigDataServer.ExtendedCompressionOptions compressionParams) throws SpimDataException, IOException {
 
+    public CellHandler(final String baseUrl,
+                       final String xmlFilename,
+                       final String datasetName,
+                       final String thumbnailsDirectory,
+                       final BigDataServer.ExtendedCompressionOptions compressionOps) throws SpimDataException, IOException {
         final XmlIoSpimDataMinimal io = new XmlIoSpimDataMinimal();
         final SpimDataMinimal spimData = io.load(xmlFilename);
         final SequenceDescriptionMinimal seq = spimData.getSequenceDescription();
-
         final Hdf5ImageLoader imgLoader = (Hdf5ImageLoader) seq.getImgLoader();
-        this.compressionParams = compressionParams;
+        this.compressionParams = compressionOps;
 
-        cache = imgLoader.getCacheControl();
-        loader = imgLoader.getShortArrayLoader();
-        cacheHints = new CacheHints(LoadingStrategy.BLOCKING, 0, false);
+        final Hdf5VolatileShortArrayLoader cacheArrayLoader = imgLoader.getShortArrayLoader();
+        loader = key -> {
+            final int[] cellDims = new int[]{
+                    Integer.parseInt(key.parts[5]),
+                    Integer.parseInt(key.parts[6]),
+                    Integer.parseInt(key.parts[7])};
+            final long[] cellMin = new long[]{
+                    Long.parseLong(key.parts[8]),
+                    Long.parseLong(key.parts[9]),
+                    Long.parseLong(key.parts[10])};
+            return new Cell<>(cellDims, cellMin, cacheArrayLoader.loadArray(key.timepoint, key.setup, key.level, cellDims, cellMin));
+        };
+
+        cache = new SoftRefLoaderCache<>();
 
         // dataSetURL property is used for providing the XML file by replace
         // SequenceDescription>ImageLoader>baseUrl
@@ -145,14 +210,12 @@ public class CellHandler extends ContextHandler {
         baseFilename = xmlFilename.endsWith(".xml") ? xmlFilename.substring(0, xmlFilename.length() - ".xml".length()) : xmlFilename;
         dataSetURL = baseUrl;
 
-        final int numberOfMipmapLevels = imgLoader.getSetupImgLoader(0).numMipmapLevels();
-
         datasetXmlString = buildRemoteDatasetXML(io, spimData, baseUrl);
         metadataJson = buildMetadataJsonString(imgLoader, seq);
         settingsXmlString = buildSettingsXML(baseFilename);
         thumbnailFilename = createThumbnail(spimData, baseFilename, datasetName, thumbnailsDirectory);
 
-
+        final int numberOfMipmapLevels = imgLoader.getSetupImgLoader(0).numMipmapLevels();
         initializeCompression(numberOfMipmapLevels);
     }
 
@@ -221,31 +284,11 @@ public class CellHandler extends ContextHandler {
         cachedBuffers.push(buffer);
     }
 
-    private short[] getCachedVolatileCellData(final String[] parts, final int[] cellDims, final int level) {
-        final int index = Integer.parseInt(parts[1]);
-        final int timepoint = Integer.parseInt(parts[2]);
-        final int setup = Integer.parseInt(parts[3]);
-        final Key key = new VolatileGlobalCellCache.Key(timepoint, setup, level, index);
-        VolatileCell<?> cell = cache.getLoadingVolatileCache().getIfPresent(key, cacheHints);
-
-        final long[] cellMin = new long[]{
-                Long.parseLong(parts[8]),
-                Long.parseLong(parts[9]),
-                Long.parseLong(parts[10])};
-        if (cell == null) {
-            cell = cache.getLoadingVolatileCache().get(key,
-                                                       cacheHints,
-                                                       new VolatileCellLoader<>(loader, timepoint, setup, level, cellDims, cellMin));
-        }
-        //noinspection unchecked
-        return ((VolatileCell<VolatileShortArray>) cell).getData().getCurrentStorageArray();
-    }
-
     private FlatBufferInputData createInputDataObject(final short[] data, final int[] cellDims) {
         return new FlatBufferInputData(data, new V3i(cellDims[0], cellDims[1], cellDims[2]), InputData.PixelType.Gray16, this.baseFilename);
     }
 
-    private void responseWithShortArray(final HttpServletResponse response, final short[] data) throws IOException {
+    private void respondWithShortArray(final HttpServletResponse response, final short[] data) throws IOException {
         final OutputStream responseStream = response.getOutputStream();
 
         final byte[] buf = new byte[2 * data.length];
@@ -257,6 +300,22 @@ public class CellHandler extends ContextHandler {
         response.setContentLength(buf.length);
         responseStream.write(buf);
         responseStream.close();
+    }
+
+    private short[] getCachedVolatileCellData(final String[] parts, final int level) {
+        final int index = Integer.parseInt(parts[1]);
+        final int timepoint = Integer.parseInt(parts[2]);
+        final int setup = Integer.parseInt(parts[3]);
+
+        final Key key = new Key(timepoint, setup, level, index, parts);
+        short[] data;
+        try {
+            final Cell<?> cell = cache.get(key, loader);
+            data = ((VolatileShortArray) cell.getData()).getCurrentStorageArray();
+        } catch (final ExecutionException e) {
+            data = new short[0];
+        }
+        return data;
     }
 
     @Override
@@ -281,28 +340,23 @@ public class CellHandler extends ContextHandler {
             respondWithString(baseRequest, response, "application/xml", datasetXmlString);
             return;
         }
+
         final String[] parts = cellString.split("/");
         if (parts[0].equals("cell")) {
+
             final int level = Integer.parseInt(parts[4]);
-            final int[] cellDims = new int[]{
-                    Integer.parseInt(parts[5]),
-                    Integer.parseInt(parts[6]),
-                    Integer.parseInt(parts[7])};
-
-            final short[] data = getCachedVolatileCellData(parts, cellDims, level);
-
-            responseWithShortArray(response, data);
+            final short[] data = getCachedVolatileCellData(parts, level);
+            respondWithShortArray(response, data);
 
             response.setContentType("application/octet-stream");
             response.setStatus(HttpServletResponse.SC_OK);
             baseRequest.setHandled(true);
-
         } else if (parts[0].equals("cell_qcmp")) {
             final Stopwatch stopwatch = Stopwatch.startNew();
             final int mipmapLevel = Integer.parseInt(parts[4]);
             final int[] cellDims = new int[]{Integer.parseInt(parts[5]), Integer.parseInt(parts[6]), Integer.parseInt(parts[7])};
 
-            final short[] data = getCachedVolatileCellData(parts, cellDims, mipmapLevel);
+            final short[] data = getCachedVolatileCellData(parts, mipmapLevel);
             assert (compressors != null && !compressors.isEmpty());
 
             final FlatBufferInputData inputData = createInputDataObject(data, cellDims);
@@ -349,6 +403,23 @@ public class CellHandler extends ContextHandler {
         }
     }
 
+    private void provideThumbnail(final Request baseRequest, final HttpServletResponse response) throws IOException {
+        final Path path = Paths.get(thumbnailFilename);
+        if (Files.exists(path)) {
+            final byte[] imageData = Files.readAllBytes(path);
+            if (imageData != null) {
+                response.setContentType("image/png");
+                response.setContentLength(imageData.length);
+                response.setStatus(HttpServletResponse.SC_OK);
+                baseRequest.setHandled(true);
+
+                final OutputStream os = response.getOutputStream();
+                os.write(imageData);
+                os.close();
+            }
+        }
+    }
+
     private void respondWithCompressionInfo(final Request baseRequest, final HttpServletResponse response) throws IOException {
         if (cachedCodebooks == null || cachedCodebooks.isEmpty()) {
             LOG.info("QCMP initialization request was refused, QCMP compression is not enabled.");
@@ -367,23 +438,6 @@ public class CellHandler extends ContextHandler {
         response.setContentType("application/octet-stream");
         response.setStatus(HttpServletResponse.SC_OK);
         baseRequest.setHandled(true);
-    }
-
-    private void provideThumbnail(final Request baseRequest, final HttpServletResponse response) throws IOException {
-        final Path path = Paths.get(thumbnailFilename);
-        if (Files.exists(path)) {
-            final byte[] imageData = Files.readAllBytes(path);
-            if (imageData != null) {
-                response.setContentType("image/png");
-                response.setContentLength(imageData.length);
-                response.setStatus(HttpServletResponse.SC_OK);
-                baseRequest.setHandled(true);
-
-                final OutputStream os = response.getOutputStream();
-                os.write(imageData);
-                os.close();
-            }
-        }
     }
 
     public String getXmlFile() {

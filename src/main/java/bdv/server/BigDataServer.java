@@ -58,26 +58,6 @@ import java.util.Optional;
 public class BigDataServer {
     private static final org.eclipse.jetty.util.log.Logger LOG = Log.getLogger(BigDataServer.class);
 
-    //    private static ScalarQuantizer quantizer;
-
-    static Parameters getDefaultParameters() {
-        final int port = 8080;
-        String hostname;
-        try {
-            hostname = InetAddress.getLocalHost().getHostName();
-        } catch (final UnknownHostException e) {
-            hostname = "localhost";
-        }
-        final String thumbnailDirectory = null;
-        final boolean enableManagerContext = false;
-        return new Parameters(port,
-                              hostname,
-                              new HashMap<String, String>(),
-                              thumbnailDirectory,
-                              enableManagerContext,
-                              new ExtendedCompressionOptions());
-    }
-
     public static class ExtendedCompressionOptions extends CompressionOptions {
         private int compressFromMipmapLevel;
 
@@ -88,6 +68,80 @@ public class BigDataServer {
         public void setCompressFromMipmapLevel(final int compressFromMipmapLevel) {
             this.compressFromMipmapLevel = compressFromMipmapLevel;
         }
+    }
+
+    static Parameters getDefaultParameters() {
+
+        final int port = 8080;
+        String hostname;
+        try {
+            hostname = InetAddress.getLocalHost().getHostName();
+        } catch (final UnknownHostException e) {
+            hostname = "localhost";
+        }
+        final String thumbnailDirectory = null;
+        final String baseUrl = null;
+        final boolean enableManagerContext = false;
+        return new Parameters(port,
+                              hostname,
+                              new HashMap<String, String>(),
+                              thumbnailDirectory,
+                              baseUrl,
+                              enableManagerContext,
+                              new ExtendedCompressionOptions());
+    }
+
+    public static void main(final String[] args) throws Exception {
+        System.setProperty("org.eclipse.jetty.util.log.class", "org.eclipse.jetty.util.log.StdErrLog");
+
+        final Parameters params = processOptions(args, getDefaultParameters());
+        if (params == null)
+            return;
+
+        final String thumbnailsDirectoryName = getThumbnailDirectoryPath(params);
+
+        // Threadpool for multiple connections
+        final Server server = new Server(new QueuedThreadPool(200, 8));
+
+        // ServerConnector configuration
+        final ServerConnector connector = new ServerConnector(server);
+        connector.setHost(params.getHostname());
+        connector.setPort(params.getPort());
+        LOG.info("Set connectors: " + connector);
+        server.setConnectors(new Connector[]{connector});
+        final String baseURL = params.getBaseUrl() != null ? params.getBaseUrl() :
+                "http://" + server.getURI().getHost() + ":" + params.getPort();
+        System.out.println("baseURL = " + baseURL);
+
+        // Handler initialization
+        final HandlerCollection handlers = new HandlerCollection();
+
+        final ContextHandlerCollection datasetHandlers = createHandlers(baseURL,
+                                                                        params.getDatasets(),
+                                                                        thumbnailsDirectoryName,
+                                                                        params.getCompressionParams());
+        handlers.addHandler(datasetHandlers);
+        handlers.addHandler(new JsonDatasetListHandler(server, datasetHandlers));
+
+        Handler handler = handlers;
+        if (params.enableManagerContext()) {
+            // Add Statistics bean to the connector
+            final ConnectorStatistics connectorStats = new ConnectorStatistics();
+            connector.addBean(connectorStats);
+
+            // create StatisticsHandler wrapper and ManagerHandler
+            final StatisticsHandler statHandler = new StatisticsHandler();
+            handlers.addHandler(new ManagerHandler(baseURL, server, connectorStats, statHandler, datasetHandlers, thumbnailsDirectoryName));
+            statHandler.setHandler(handlers);
+            handler = statHandler;
+        }
+
+        LOG.info("Set handler: " + handler);
+        server.setHandler(handler);
+        LOG.info("Server Base URL: " + baseURL);
+        LOG.info("BigDataServer starting");
+        server.start();
+        server.join();
     }
 
     /**
@@ -105,19 +159,26 @@ public class BigDataServer {
 
         private final String thumbnailDirectory;
 
-        private final ExtendedCompressionOptions compressionParam;
+        private final String baseUrl;
 
         private final boolean enableManagerContext;
 
-        Parameters(final int port, final String hostname, final Map<String, String> datasetNameToXml,
-                   final String thumbnailDirectory, final boolean enableManagerContext,
-                   final ExtendedCompressionOptions customCompressionParameters) {
+        private final ExtendedCompressionOptions compressionParam;
+
+        Parameters(final int port,
+                   final String hostname,
+                   final Map<String, String> datasetNameToXml,
+                   final String thumbnailDirectory,
+                   final String baseUrl,
+                   final boolean enableManagerContext,
+                   final ExtendedCompressionOptions extendedCompressionOptions) {
             this.port = port;
             this.hostname = hostname;
             this.datasetNameToXml = datasetNameToXml;
             this.thumbnailDirectory = thumbnailDirectory;
+            this.baseUrl = baseUrl;
             this.enableManagerContext = enableManagerContext;
-            this.compressionParam = customCompressionParameters;
+            this.compressionParam = extendedCompressionOptions;
         }
 
         public int getPort() {
@@ -126,6 +187,10 @@ public class BigDataServer {
 
         public String getHostname() {
             return hostname;
+        }
+
+        public String getBaseUrl() {
+            return baseUrl;
         }
 
         public String getThumbnailDirectory() {
@@ -150,21 +215,21 @@ public class BigDataServer {
         }
     }
 
-
     @SuppressWarnings("static-access")
     static private Parameters processOptions(final String[] args, final Parameters defaultParameters) throws IOException {
+        final String ENABLE_COMPRESSION = "qcmp";
+        final String CompressFromKey = "compressFrom";
+
         // create Options object
         final Options options = new Options();
 
         final String cmdLineSyntax = "BigDataServer [OPTIONS] [NAME XML] ...\n";
-        final String CompressFromKey = "compressFrom";
 
         final String description =
                 "Serves one or more XML/HDF5 datasets for remote access over HTTP.\n" +
                         "Provide (NAME XML) pairs on the command line or in a dataset file, where NAME is the name under which the " +
                         "dataset should be made accessible and XML is the path to the XML file of the dataset.\n" +
                         "If -qcmp option is specified, these options are enabled:\u001b[35m-sq,-vq,-b,-cbc\u001b[0m\n";
-
 
         options.addOption(OptionBuilder
                                   .withDescription("Hostname of the server.\n(default: " + defaultParameters.getHostname() + ")")
@@ -193,16 +258,14 @@ public class BigDataServer {
                                   .withArgName("DIRECTORY")
                                   .create("t"));
 
-        final String ENABLE_COMPRESSION = "qcmp";
-
-        final Option test = OptionBuilder
-                .withDescription("Enable QCMP compression")
-                .create(ENABLE_COMPRESSION);
-
+        options.addOption(OptionBuilder
+                                  .withDescription("Base URL under which the server will be made visible (e.g., if behind a proxy)")
+                                  .hasArg()
+                                  .withArgName("BASEURL")
+                                  .create("b"));
 
         int optionOrder = 0;
-        options.addOption(new OptionWithOrder(OptionBuilder
-                                                      .withDescription("Enable QCMP compression")
+        options.addOption(new OptionWithOrder(OptionBuilder.withDescription("Enable QCMP compression")
                                                       .create(ENABLE_COMPRESSION), ++optionOrder));
 
 
@@ -228,15 +291,16 @@ public class BigDataServer {
             final String portString = cmd.getOptionValue("p", Integer.toString(defaultParameters.getPort()));
             final int port = Integer.parseInt(portString);
 
-
             // Getting server name option
             final String serverName = cmd.getOptionValue("s", defaultParameters.getHostname());
 
             // Getting thumbnail directory option
             final String thumbnailDirectory = cmd.getOptionValue("t", defaultParameters.getThumbnailDirectory());
 
-            final HashMap<String, String> datasets = new HashMap<String, String>(defaultParameters.getDatasets());
+            // Getting base url option
+            final String baseUrl = cmd.getOptionValue("b", defaultParameters.getBaseUrl());
 
+            final HashMap<String, String> datasets = new HashMap<String, String>(defaultParameters.getDatasets());
 
             final boolean enableQcmpCompression = cmd.hasOption(ENABLE_COMPRESSION);
             final ExtendedCompressionOptions compressionOptions = new ExtendedCompressionOptions();
@@ -306,7 +370,6 @@ public class BigDataServer {
                     enableManagerContext = true;
             }
 
-
             if (cmd.hasOption("d")) {
                 // process the file given with "-d"
                 final String datasetFile = cmd.getOptionValue("d");
@@ -351,6 +414,7 @@ public class BigDataServer {
                                   serverName,
                                   datasets,
                                   thumbnailDirectory,
+                                  baseUrl,
                                   enableManagerContext,
                                   enableQcmpCompression ? compressionOptions : null);
         } catch (final ParseException | IllegalArgumentException e) {
@@ -416,73 +480,23 @@ public class BigDataServer {
     }
 
     private static ContextHandlerCollection createHandlers(final String baseURL,
-                                                           final Parameters params,
-                                                           final String thumbnailsDirectoryName) throws SpimDataException, IOException {
-
+                                                           final Map<String, String> dataSet,
+                                                           final String thumbnailsDirectoryName,
+                                                           final ExtendedCompressionOptions compressionOps) throws SpimDataException,
+            IOException {
         final ContextHandlerCollection handlers = new ContextHandlerCollection();
 
-        final Map<String, String> dataSet = params.getDatasets();
         for (final Entry<String, String> entry : dataSet.entrySet()) {
             final String name = entry.getKey();
             final String xmlpath = entry.getValue();
             final String context = "/" + name;
-            final CellHandler ctx = new CellHandler(baseURL + context + "/", xmlpath, name,
-                                                    thumbnailsDirectoryName,
-                                                    params.getCompressionParams());
-
+            final CellHandler ctx = new CellHandler(baseURL + context + "/", xmlpath,
+                                                    name, thumbnailsDirectoryName,
+                                                    compressionOps);
             ctx.setContextPath(context);
             handlers.addHandler(ctx);
         }
 
         return handlers;
-    }
-
-    public static void main(final String[] args) throws Exception {
-        System.setProperty("org.eclipse.jetty.util.log.class", "org.eclipse.jetty.util.log.StdErrLog");
-
-        final Parameters params = processOptions(args, getDefaultParameters());
-        if (params == null)
-            return;
-
-        final String thumbnailsDirectoryName = getThumbnailDirectoryPath(params);
-
-        // Threadpool for multiple connections
-        final Server server = new Server(new QueuedThreadPool(200, 8));
-
-        // ServerConnector configuration
-        final ServerConnector connector = new ServerConnector(server);
-        connector.setHost(params.getHostname());
-        connector.setPort(params.getPort());
-        LOG.info("Set connectors: " + connector);
-        server.setConnectors(new Connector[]{connector});
-        final String baseURL = "http://" + server.getURI().getHost() + ":" + params.getPort();
-
-        // Handler initialization
-        final HandlerCollection handlers = new HandlerCollection();
-
-        final ContextHandlerCollection datasetHandlers = createHandlers(baseURL, params, thumbnailsDirectoryName);
-        handlers.addHandler(datasetHandlers);
-        handlers.addHandler(new JsonDatasetListHandler(server, datasetHandlers));
-
-        Handler handler = handlers;
-        if (params.enableManagerContext()) {
-            // Add Statistics bean to the connector
-            final ConnectorStatistics connectorStats = new ConnectorStatistics();
-            connector.addBean(connectorStats);
-
-            // create StatisticsHandler wrapper and ManagerHandler
-            final StatisticsHandler statHandler = new StatisticsHandler();
-            handlers.addHandler(new ManagerHandler(baseURL, server, connectorStats, statHandler, datasetHandlers, thumbnailsDirectoryName));
-            statHandler.setHandler(handlers);
-            handler = statHandler;
-        }
-
-
-        LOG.info("Set handler: " + handler);
-        server.setHandler(handler);
-        LOG.info("Server Base URL: " + baseURL);
-        LOG.info("BigDataServer starting");
-        server.start();
-        server.join();
     }
 }

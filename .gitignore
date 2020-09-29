@@ -9,7 +9,8 @@
 # Maven #
 /target/
 
+# IntelliJ
 .idea/
 classes/
-bigdataviewer-server.iml
 src/main/resources/META-INF/MANIFEST.MF
+*.iml
