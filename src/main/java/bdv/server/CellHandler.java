@@ -430,6 +430,7 @@ public class CellHandler extends ContextHandler {
         }
 
         try (final DataOutputStream dos = new DataOutputStream(response.getOutputStream())) {
+            dos.writeByte(compressionParams.getCompressFromMipmapLevel());
             dos.writeByte(cachedCodebooks.size());
             for (final ICacheFile cacheFile : cachedCodebooks) {
                 cacheFile.writeToStream(dos);
