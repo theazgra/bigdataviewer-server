@@ -385,9 +385,12 @@ public class CellHandler extends ContextHandler {
             baseRequest.setHandled(true);
             returnBufferForReuse(cellCompressionStream);
             stopwatch.stop();
+
+            final long currentlySent = addToAccumulation(compressedContentLength);
+            final long uncompressedWouldSent = addToUncompressedAccumulation(data.length * 2);
+
             if (compressionParams.isVerbose()) {
-                final long currentlySent = addToAccumulation(compressedContentLength);
-                final long uncompressedWouldSent = addToUncompressedAccumulation(data.length * 2);
+
                 LOG.info(String.format("Sending %dB instead of %dB. Currently sent %dB instead of %dB. Handler finished in %s",
                                        compressedContentLength,
                                        (data.length * 2),
@@ -400,7 +403,27 @@ public class CellHandler extends ContextHandler {
             respondWithString(baseRequest, response, "application/json", metadataJson);
         } else if (parts[0].equals("init_qcmp")) {
             respondWithCompressionInfo(baseRequest, response);
+        } else if (parts[0].equals("qcmp_summary")) {
+            respondWithCompressionSummary(baseRequest, response);
         }
+    }
+
+    private void respondWithCompressionSummary(final Request baseRequest, final HttpServletResponse response) throws IOException {
+        final long currentlySent = addToAccumulation(0);
+        final long uncompressedWouldSent = addToUncompressedAccumulation(0);
+
+        final double sentKB = ((double) currentlySent / 1000.0);
+        final double sentMB = ((double) currentlySent / 1000.0) / 1000.0;
+        final double wouldSentKB = ((double) uncompressedWouldSent / 1000.0);
+        final double wouldSentMB = ((double) uncompressedWouldSent / 1000.0) / 1000.0;
+        final double percentage = (double) currentlySent / (double) uncompressedWouldSent;
+
+
+        respondWithString(baseRequest, response, "text/plain",
+                          String.format("Currently sent %d B (%.1f KB, %.1f MB) instead of %d B (%.1f KB, %.1f MB).\nPercentage: %.3f",
+                                        currentlySent, sentKB, sentMB, uncompressedWouldSent, wouldSentKB, wouldSentMB, percentage),
+                          HttpServletResponse.SC_OK);
+
     }
 
     private void provideThumbnail(final Request baseRequest, final HttpServletResponse response) throws IOException {
