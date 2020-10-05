@@ -51,6 +51,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Stack;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class CellHandler extends ContextHandler {
     private static final org.eclipse.jetty.util.log.Logger LOG = Log.getLogger(CellHandler.class);
@@ -163,19 +164,9 @@ public class CellHandler extends ContextHandler {
 
     private Stack<MemoryOutputStream> cachedBuffers = null;
     private final int INITIAL_BUFFER_SIZE = 2048;
-    private long accumulation = 0;
-    private long uncompressedAccumulation = 0;
 
-
-    private synchronized long addToAccumulation(final int value) {
-        accumulation += value;
-        return accumulation;
-    }
-
-    private synchronized long addToUncompressedAccumulation(final int value) {
-        uncompressedAccumulation += value;
-        return uncompressedAccumulation;
-    }
+    private final AtomicInteger compressedAccumulation = new AtomicInteger(0);
+    private final AtomicInteger uncompressedAccumulation = new AtomicInteger(0);
 
 
     public CellHandler(final String baseUrl,
@@ -386,8 +377,8 @@ public class CellHandler extends ContextHandler {
             returnBufferForReuse(cellCompressionStream);
             stopwatch.stop();
 
-            final long currentlySent = addToAccumulation(compressedContentLength);
-            final long uncompressedWouldSent = addToUncompressedAccumulation(data.length * 2);
+            final long currentlySent = compressedAccumulation.addAndGet(compressedContentLength);
+            final long uncompressedWouldSent = uncompressedAccumulation.addAndGet(data.length * 2);
 
             if (compressionParams.isVerbose()) {
 
@@ -409,8 +400,8 @@ public class CellHandler extends ContextHandler {
     }
 
     private void respondWithCompressionSummary(final Request baseRequest, final HttpServletResponse response) throws IOException {
-        final long currentlySent = addToAccumulation(0);
-        final long uncompressedWouldSent = addToUncompressedAccumulation(0);
+        final long currentlySent = compressedAccumulation.get();
+        final long uncompressedWouldSent = uncompressedAccumulation.get();
 
         final double sentKB = ((double) currentlySent / 1000.0);
         final double sentMB = ((double) currentlySent / 1000.0) / 1000.0;
