@@ -1,13 +1,12 @@
 package bdv.server;
 
-
-import azgracompress.cli.CliConstants;
-import azgracompress.cli.ParseUtils;
-import azgracompress.compression.CompressionOptions;
-import azgracompress.data.V2i;
-import azgracompress.data.V3i;
-import azgracompress.fileformat.QuantizationType;
 import bdv.util.OptionWithOrder;
+import cz.it4i.qcmp.cli.CliConstants;
+import cz.it4i.qcmp.cli.ParseUtils;
+import cz.it4i.qcmp.compression.CompressionOptions;
+import cz.it4i.qcmp.data.V2i;
+import cz.it4i.qcmp.data.V3i;
+import cz.it4i.qcmp.fileformat.QuantizationType;
 import mpicbg.spim.data.SpimDataException;
 import org.apache.commons.cli.*;
 import org.apache.commons.lang.StringUtils;
