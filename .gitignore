@@ -12,5 +12,5 @@
 # IntelliJ
 .idea/
 classes/
-src/main/resources/META-INF/MANIFEST.MF
 *.iml
+*.MF
