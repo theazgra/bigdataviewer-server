@@ -218,7 +218,8 @@ public class BigDataServer {
     @SuppressWarnings("static-access")
     static private Parameters processOptions(final String[] args, final Parameters defaultParameters) throws IOException {
         final String ENABLE_COMPRESSION = "qcmp";
-        final String CompressFromKey = "compressFrom";
+        final String CompressFromShortKey = "cf";
+        final String CompressFromLongKey = "compress-from";
 
         // create Options object
         final Options options = new Options();
@@ -270,11 +271,11 @@ public class BigDataServer {
 
 
         options.addOption(new OptionWithOrder(CliConstants.createCBCMethod(), ++optionOrder));
-        options.addOption(new OptionWithOrder(CliConstants.createSQOption(), ++optionOrder));
+        //        options.addOption(new OptionWithOrder(CliConstants.createSQOption(), ++optionOrder));
         options.addOption(new OptionWithOrder(CliConstants.createVQOption(), ++optionOrder));
         options.addOption(new OptionWithOrder(CliConstants.createVerboseOption(false), ++optionOrder));
-        options.addOption(new OptionWithOrder(new Option(CompressFromKey, true, "Level from which the compression is enabled."),
-                                              ++optionOrder));
+        options.addOption(new OptionWithOrder(new Option(CompressFromShortKey, CompressFromLongKey, true,
+                                                         "Level from which the compression is enabled."), ++optionOrder));
 
 
         if (Constants.ENABLE_EXPERIMENTAL_FEATURES) {
@@ -333,8 +334,8 @@ public class BigDataServer {
                 compressionOptions.setVerbose(cmd.hasOption(CliConstants.VERBOSE_LONG));
 
 
-                if (cmd.hasOption(CompressFromKey)) {
-                    compressionOptions.setCompressFromMipmapLevel(Integer.parseInt(cmd.getOptionValue(CompressFromKey)));
+                if (cmd.hasOption(CompressFromLongKey)) {
+                    compressionOptions.setCompressFromMipmapLevel(Integer.parseInt(cmd.getOptionValue(CompressFromLongKey)));
                 }
 
                 final StringBuilder compressionReport = new StringBuilder();
