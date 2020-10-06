@@ -14,6 +14,8 @@ where NAME is the name under which the dataset should be made accessible and XML
 ## QCMP Compression Extension
 The QCMP compression extension of BigDataViewer Web Server gives user an option to use lossy compression, which greatly reduce the amount of data transfered through the network. Vector quantization with Huffman coding is used to compress the data.
 
+Enabling this extension doesn't limit the basic web server functionality in any way. Requests to uncompressed data are sent with `cell` parameter, while requests to compressed data to `cell_qcmp`.
+
 In order to be able to use compression for your dataset, the dataset codebook for given quantization must be prepared. The codebook can be created with the QCMP console application using the `-tcb,--train-codebook` CLI method. For further details see [compression library source code and README](https://code.it4i.cz/BioinformaticDataCompression/QcmpCompressionLibrary). The codebooks are required to be created before hand, because their creation is quite time consuming.
 
 ### Additional command line options
@@ -25,7 +27,7 @@ In order to be able to use compression for your dataset, the dataset codebook fo
 
 
 ### Example:
-We have dataset *drosophila32* with its XML file drosophila_32x32.xml and we want to use vector quantization with quantization vector of dimensions 3x3x3. This is three-dimensional *voxel* vector with 27 values. We have exported our dataset using BigDataViewer's `Export Current Image as XML/HDF5` tool. We recommend to check `manual mipmap setup` and set bigger Hdf5 chunk sizes, for example we have used {32,32,32} for all mipmap levels. Bigger chunks would normally result in greater data transfer (8 KB for $16^3$ and 65 KB for $32^3$), but compression greatly reduces the chunk size. Also we recommend to create as many codebooks as there are subsampling factors or pyramid levels. By multiple codebooks we mean codebooks of different size. Larger codebook means better compression. Possible codebook sizes are (*for now*) 256, 128, 64, 32, 16, 8 and 4. If we export our dataset with four pyramid levels/subsampling factors, four largest codebooks would be used 256, 128, 64 and 32.
+We have dataset *drosophila32* with its XML file drosophila_32x32.xml and we want to use vector quantization with quantization vector of dimensions 3x3x3. This is three-dimensional *voxel* vector with 27 values. We have exported our dataset using BigDataViewer's `Export Current Image as XML/HDF5` tool. We recommend to check `manual mipmap setup` and set bigger Hdf5 chunk sizes, for example we have used {32,32,32} for all mipmap levels. Bigger chunks would normally result in greater data transfer (8 KB for 16^3 and 65 KB for 32^3), but compression greatly reduces the chunk size. Also we recommend to create as many codebooks as there are subsampling factors or pyramid levels. By multiple codebooks we mean codebooks of different size. Larger codebook means better compression. Possible codebook sizes are (*for now*) 256, 128, 64, 32, 16, 8 and 4. If we export our dataset with four pyramid levels/subsampling factors, four largest codebooks would be used 256, 128, 64 and 32.
 
 Subsampling factor / pyramid level mapping to codebook size example:
 ```
