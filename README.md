@@ -23,7 +23,14 @@ In order to be able to use compression for your dataset, the dataset codebook fo
 - `-cbc, --codebook-cache <DIRECTORY>`  - Directory with prepared codebooks.
 - `-vq, --vector-quantization <VECTOR>` - Set vector quantization as the used lossy compression algorithm. *REQUIRED FOR NOW*. `VECTOR` specifies the dimenions of the quantization vector eg. 3x3, 3x3x3, ...
 - `-v, --verbose`                       - Make the QCMP cell handler verbose.
-- `-cf,--compress-from <PYRAMID-LEVEL>`  - Set minimal mipmap/pyramid level, which should be compressed. For example `-cf 1` means that level 0 won't be compressed, but levels greater and equal to 1 will be.
+- `-wc, --worker-count`                 - Number of worker threads used for codebook training.
+- `-cf,--compress-from <PYRAMID-LEVEL>` - Set minimal mipmap/pyramid level, which should be compressed. For example `-cf 1` means that level 0 won't be compressed, but levels greater and equal to 1 will be.
+- `tcb` - Specify after dataset pair, to enable codebook training on the server startup.
+
+
+### Note about `tcb`:
+`tcb` option can be specified in both dataset file and command line arguments. In the dataset file, it must be separated by `<tab>` character, same as dataset name and xml file path.
+The trained codebooks will be saved in the codebook cache directory, which is specified by the `-cbc` options. Codebooks will be read from this directory in the next run of the server application.
 
 
 ### Example:
