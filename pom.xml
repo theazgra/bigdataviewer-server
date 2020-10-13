@@ -96,22 +96,22 @@
             <id>cz.it4i</id>
             <url>https://code.it4i.cz/api/v4/projects/932/packages/maven</url>
         </repository>
-<!--        <repository>-->
-<!--            <id>gitlab-maven</id>-->
-<!--            <url>https://code.it4i.cz/api/v4/projects/934/packages/maven</url>-->
-<!--        </repository>-->
+        <repository>
+            <id>gitlab-maven-bdv-server</id>
+            <url>https://code.it4i.cz/api/v4/projects/934/packages/maven</url>
+        </repository>
     </repositories>
 
-<!--    <distributionManagement>-->
-<!--        <repository>-->
-<!--            <id>gitlab-maven</id>-->
-<!--            <url>https://code.it4i.cz/api/v4/projects/934/packages/maven</url>-->
-<!--        </repository>-->
-<!--        <snapshotRepository>-->
-<!--            <id>gitlab-maven</id>-->
-<!--            <url>https://code.it4i.cz/api/v4/projects/934/packages/maven</url>-->
-<!--        </snapshotRepository>-->
-<!--    </distributionManagement>-->
+    <distributionManagement>
+        <repository>
+            <id>gitlab-maven-bdv-server</id>
+            <url>https://code.it4i.cz/api/v4/projects/934/packages/maven</url>
+        </repository>
+        <snapshotRepository>
+            <id>gitlab-maven-bdv-server</id>
+            <url>https://code.it4i.cz/api/v4/projects/934/packages/maven</url>
+        </snapshotRepository>
+    </distributionManagement>
 
 
     <dependencies>
@@ -142,6 +142,10 @@
             <groupId>cz.it4i</groupId>
             <artifactId>QcmpCompression</artifactId>
             <version>0.5-SNAPSHOT</version>
+        </dependency>
+        <dependency>
+            <groupId>net.imglib2</groupId>
+            <artifactId>imglib2</artifactId>
         </dependency>
     </dependencies>
 
