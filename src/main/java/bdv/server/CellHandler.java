@@ -17,18 +17,18 @@ import cz.it4i.qcmp.cache.QuantizationCacheManager;
 import cz.it4i.qcmp.compression.CompressionOptions;
 import cz.it4i.qcmp.compression.ImageCompressor;
 import cz.it4i.qcmp.data.V3i;
-import cz.it4i.qcmp.io.FileInputData;
-import cz.it4i.qcmp.io.FlatBufferInputData;
-import cz.it4i.qcmp.io.InputData;
-import cz.it4i.qcmp.io.MemoryOutputStream;
+import cz.it4i.qcmp.io.*;
 import cz.it4i.qcmp.utilities.Stopwatch;
 import mpicbg.spim.data.SpimDataException;
+import mpicbg.spim.data.generic.sequence.ImgLoaderHints;
 import net.imglib2.cache.CacheLoader;
 import net.imglib2.cache.LoaderCache;
 import net.imglib2.cache.ref.SoftRefLoaderCache;
+import net.imglib2.img.array.ArrayImg;
 import net.imglib2.img.basictypeaccess.volatiles.array.VolatileShortArray;
 import net.imglib2.img.cell.Cell;
 import net.imglib2.realtransform.AffineTransform3D;
+import net.imglib2.type.numeric.integer.UnsignedShortType;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.handler.ContextHandler;
 import org.eclipse.jetty.util.log.Log;
@@ -181,6 +181,7 @@ public class CellHandler extends ContextHandler {
         this.compressionParams = compressionOps;
 
         final Hdf5VolatileShortArrayLoader cacheArrayLoader = imgLoader.getShortArrayLoader();
+
         loader = key -> {
             final int[] cellDims = new int[]{
                     Integer.parseInt(key.parts[5]),
@@ -207,7 +208,7 @@ public class CellHandler extends ContextHandler {
         thumbnailFilename = createThumbnail(spimData, baseFilename, datasetName, thumbnailsDirectory);
 
         final int numberOfMipmapLevels = imgLoader.getSetupImgLoader(0).numMipmapLevels();
-        initializeCompression(numberOfMipmapLevels);
+        initializeCompression(numberOfMipmapLevels, imgLoader);
     }
 
     private ImageCompressor getCompressorForMipmapLevel(final int mipmapLevel) {
@@ -218,7 +219,7 @@ public class CellHandler extends ContextHandler {
         return lowestResCompressor;
     }
 
-    private void initializeCompression(final int numberOfMipmapLevels) {
+    private void initializeCompression(final int numberOfMipmapLevels, final Hdf5ImageLoader hdf5ImageLoader) {
         if (compressionParams == null)
             return;
         this.compressionParams.setInputDataInfo(new FileInputData(this.baseFilename));
@@ -226,8 +227,24 @@ public class CellHandler extends ContextHandler {
 
         cachedCodebooks = qcm.loadAvailableCacheFiles(compressionParams);
         if (cachedCodebooks.isEmpty()) {
-            LOG.warn("Didn't find any cached codebook for " + this.baseFilename);
-            return;
+            if (compressionParams.isCodebookTrainingEnabled()) {
+
+                // NOTE(Moravec): Train all possible codebooks from |L| 2 to 256.
+                if (!trainCompressionCodebooks(compressionParams, hdf5ImageLoader)) {
+                    LOG.warn("Failed to train compression codebooks.");
+                    return;
+                }
+
+                cachedCodebooks = qcm.loadAvailableCacheFiles(compressionParams);
+                if (cachedCodebooks.isEmpty()) {
+                    LOG.warn("Failed to train codebooks. Look above for errors.");
+                    assert false; // For debug purposes.
+                    return;
+                }
+            } else {
+                LOG.warn("Didn't find any cached codebooks for " + this.baseFilename);
+                return;
+            }
         }
         LOG.info(String.format("Found %d codebooks for %s.", cachedCodebooks.size(), this.baseFilename));
 
@@ -259,6 +276,38 @@ public class CellHandler extends ContextHandler {
         for (int i = 0; i < initialCompressionCacheSize; i++) {
             cachedBuffers.push(new MemoryOutputStream(INITIAL_BUFFER_SIZE));
         }
+    }
+
+    private boolean trainCompressionCodebooks(final BigDataServer.ExtendedCompressionOptions compressionOptions,
+                                              final Hdf5ImageLoader hdf5ImageLoader) {
+
+        final ArrayImg<?, ?> arrImg = (ArrayImg<?, ?>) hdf5ImageLoader.getSetupImgLoader(0).getImage(0, 0, ImgLoaderHints.LOAD_COMPLETELY);
+        assert (arrImg.numDimensions() == 3);
+
+        assert (compressionOptions.getInputDataInfo().getCacheFileName().equals(baseFilename));
+
+        final CallbackInputData cid = new CallbackInputData((x, y, z) ->
+                                                            {
+                                                                return ((UnsignedShortType) arrImg.getAt(x, y, z)).getInteger();
+                                                            },
+                                                            compressionOptions.getInputDataInfo().getDimensions(),
+                                                            baseFilename);
+        cid.setDimension(new V3i((int) arrImg.dimension(0), (int) arrImg.dimension(1), (int) arrImg.dimension(2)));
+
+
+        final InputData originalInputData = compressionOptions.getInputDataInfo();
+        final boolean originalVerbose = compressionOptions.isVerbose();
+        compressionOptions.setVerbose(true);
+        compressionOptions.setInputDataInfo(cid);
+
+
+        final ImageCompressor trainingCompressor = new ImageCompressor(compressionOptions);
+        final boolean result = trainingCompressor.trainAndSaveAllCodebooks();
+
+        compressionOptions.setInputDataInfo(originalInputData);
+        compressionOptions.setVerbose(originalVerbose);
+
+        return result;
     }
 
 

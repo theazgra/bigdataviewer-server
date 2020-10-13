@@ -57,8 +57,9 @@ import java.util.Optional;
 public class BigDataServer {
     private static final org.eclipse.jetty.util.log.Logger LOG = Log.getLogger(BigDataServer.class);
 
-    public static class ExtendedCompressionOptions extends CompressionOptions {
+    public final static class ExtendedCompressionOptions extends CompressionOptions {
         private int compressFromMipmapLevel;
+        private boolean enableCodebookTraining = false;
 
         public int getCompressFromMipmapLevel() {
             return compressFromMipmapLevel;
@@ -67,7 +68,48 @@ public class BigDataServer {
         public void setCompressFromMipmapLevel(final int compressFromMipmapLevel) {
             this.compressFromMipmapLevel = compressFromMipmapLevel;
         }
+
+        public boolean isCodebookTrainingEnabled() {
+            return enableCodebookTraining;
+        }
+
+        public void setEnableCodebookTraining(final boolean enableCodebookTraining) {
+            this.enableCodebookTraining = enableCodebookTraining;
+        }
+
+        public ExtendedCompressionOptions copyRequiredParams() {
+            final ExtendedCompressionOptions copy = new ExtendedCompressionOptions();
+            copy.setQuantizationType(getQuantizationType());
+            copy.setQuantizationVector(getQuantizationVector());
+            copy.setWorkerCount(getWorkerCount());
+            copy.setCodebookType(getCodebookType());
+            copy.setCodebookCacheFolder(getCodebookCacheFolder());
+            copy.setVerbose(isVerbose());
+            copy.setCompressFromMipmapLevel(getCompressFromMipmapLevel());
+            return copy;
+        }
     }
+
+    final static class BigDataServerDataset {
+        private final String xmlFile;
+        private final ExtendedCompressionOptions compressionOptions;
+
+        BigDataServerDataset(final String xmlFile,
+                             final ExtendedCompressionOptions compressionOptions) {
+            this.xmlFile = xmlFile;
+            this.compressionOptions = compressionOptions;
+        }
+
+        public String getXmlFile() {
+            return xmlFile;
+        }
+
+        public ExtendedCompressionOptions getCompressionOptions() {
+            return compressionOptions;
+        }
+
+    }
+
 
     static Parameters getDefaultParameters() {
 
@@ -83,7 +125,7 @@ public class BigDataServer {
         final boolean enableManagerContext = false;
         return new Parameters(port,
                               hostname,
-                              new HashMap<String, String>(),
+                              new HashMap<String, BigDataServerDataset>(),
                               thumbnailDirectory,
                               baseUrl,
                               enableManagerContext,
@@ -117,8 +159,7 @@ public class BigDataServer {
 
         final ContextHandlerCollection datasetHandlers = createHandlers(baseURL,
                                                                         params.getDatasets(),
-                                                                        thumbnailsDirectoryName,
-                                                                        params.getCompressionParams());
+                                                                        thumbnailsDirectoryName);
         handlers.addHandler(datasetHandlers);
         handlers.addHandler(new JsonDatasetListHandler(server, datasetHandlers));
 
@@ -154,7 +195,7 @@ public class BigDataServer {
         /**
          * maps from dataset name to dataset xml path.
          */
-        private final Map<String, String> datasetNameToXml;
+        private final Map<String, BigDataServerDataset> datasetNameToXml;
 
         private final String thumbnailDirectory;
 
@@ -166,7 +207,7 @@ public class BigDataServer {
 
         Parameters(final int port,
                    final String hostname,
-                   final Map<String, String> datasetNameToXml,
+                   final Map<String, BigDataServerDataset> datasetNameToXml,
                    final String thumbnailDirectory,
                    final String baseUrl,
                    final boolean enableManagerContext,
@@ -201,7 +242,7 @@ public class BigDataServer {
          *
          * @return datasets as a map from dataset name to dataset xml path.
          */
-        public Map<String, String> getDatasets() {
+        public Map<String, BigDataServerDataset> getDatasets() {
             return datasetNameToXml;
         }
 
@@ -275,6 +316,9 @@ public class BigDataServer {
         options.addOption(new OptionWithOrder(CliConstants.createVerboseOption(false), ++optionOrder));
         options.addOption(new OptionWithOrder(new Option(CompressFromShortKey, CompressFromLongKey, true,
                                                          "Level from which the compression is enabled."), ++optionOrder));
+        options.addOption(new OptionWithOrder(new Option(CliConstants.WORKER_COUNT_SHORT, CliConstants.WORKER_COUNT_LONG,
+                                                         true, "Count of worker threads, which are used for codebook training."),
+                                              ++optionOrder));
 
 
         if (Constants.ENABLE_EXPERIMENTAL_FEATURES) {
@@ -300,47 +344,47 @@ public class BigDataServer {
             // Getting base url option
             final String baseUrl = cmd.getOptionValue("b", defaultParameters.getBaseUrl());
 
-            final HashMap<String, String> datasets = new HashMap<String, String>(defaultParameters.getDatasets());
+            final HashMap<String, BigDataServerDataset> datasets =
+                    new HashMap<String, BigDataServerDataset>(defaultParameters.getDatasets());
 
             final boolean enableQcmpCompression = cmd.hasOption(ENABLE_COMPRESSION);
-            final ExtendedCompressionOptions compressionOptions = new ExtendedCompressionOptions();
+            final ExtendedCompressionOptions baseCompressionOptions = new ExtendedCompressionOptions();
             if (enableQcmpCompression) {
-                compressionOptions.setQuantizationType(QuantizationType.Invalid);
+                baseCompressionOptions.setWorkerCount(Integer.parseInt(cmd.getOptionValue(CliConstants.WORKER_COUNT_LONG, "1")));
+                baseCompressionOptions.setQuantizationType(QuantizationType.Invalid);
                 if (cmd.hasOption(CliConstants.SCALAR_QUANTIZATION_LONG))
-                    compressionOptions.setQuantizationType(QuantizationType.Scalar);
+                    baseCompressionOptions.setQuantizationType(QuantizationType.Scalar);
                 else if (cmd.hasOption(CliConstants.VECTOR_QUANTIZATION_LONG)) {
                     final String vqValue = cmd.getOptionValue(CliConstants.VECTOR_QUANTIZATION_LONG);
                     final Optional<V2i> maybeV2 = ParseUtils.tryParseV2i(vqValue, 'x');
                     if (maybeV2.isPresent()) {
-                        compressionOptions.setQuantizationType(QuantizationType.Vector2D);
-                        compressionOptions.setQuantizationVector(new V3i(maybeV2.get().getX(), maybeV2.get().getY(), 1));
+                        baseCompressionOptions.setQuantizationType(QuantizationType.Vector2D);
+                        baseCompressionOptions.setQuantizationVector(new V3i(maybeV2.get().getX(), maybeV2.get().getY(), 1));
                     } else {
                         final Optional<V3i> maybeV3 = ParseUtils.tryParseV3i(vqValue, 'x');
                         if (maybeV3.isPresent()) {
-                            compressionOptions.setQuantizationType(QuantizationType.Vector3D);
-                            compressionOptions.setQuantizationVector(maybeV3.get());
+                            baseCompressionOptions.setQuantizationType(QuantizationType.Vector3D);
+                            baseCompressionOptions.setQuantizationVector(maybeV3.get());
                         }
                     }
                 }
-                if (compressionOptions.getQuantizationType() == QuantizationType.Invalid) {
+                if (baseCompressionOptions.getQuantizationType() == QuantizationType.Invalid) {
                     throw new ParseException("Invalid quantization type.");
                 }
 
-                // NOTE(Moravec): Test if using more workers make any sense. Since the server is already handling multiple requests.
-                compressionOptions.setWorkerCount(1);
-                compressionOptions.setCodebookType(CompressionOptions.CodebookType.Global);
-                compressionOptions.setCodebookCacheFolder(cmd.getOptionValue(CliConstants.CODEBOOK_CACHE_FOLDER_LONG));
-                compressionOptions.setVerbose(cmd.hasOption(CliConstants.VERBOSE_LONG));
+                baseCompressionOptions.setCodebookType(CompressionOptions.CodebookType.Global);
+                baseCompressionOptions.setCodebookCacheFolder(cmd.getOptionValue(CliConstants.CODEBOOK_CACHE_FOLDER_LONG));
+                baseCompressionOptions.setVerbose(cmd.hasOption(CliConstants.VERBOSE_LONG));
 
 
                 if (cmd.hasOption(CompressFromLongKey)) {
-                    compressionOptions.setCompressFromMipmapLevel(Integer.parseInt(cmd.getOptionValue(CompressFromLongKey)));
+                    baseCompressionOptions.setCompressFromMipmapLevel(Integer.parseInt(cmd.getOptionValue(CompressFromLongKey)));
                 }
 
                 final StringBuilder compressionReport = new StringBuilder();
                 compressionReport.append("\u001b[33m");
                 compressionReport.append("Quantization type: ");
-                switch (compressionOptions.getQuantizationType()) {
+                switch (baseCompressionOptions.getQuantizationType()) {
                     case Scalar:
                         compressionReport.append("Scalar");
                         break;
@@ -354,11 +398,13 @@ public class BigDataServer {
                         compressionReport.append("Vector3D");
                         break;
                 }
-                compressionReport.append(compressionOptions.getQuantizationVector().toString());
+                compressionReport.append(baseCompressionOptions.getQuantizationVector().toString());
                 compressionReport.append('\n');
-                compressionReport.append("Codebook cache folder: ").append(compressionOptions.getCodebookCacheFolder()).append('\n');
-                compressionReport.append("Verbose mode: ").append(compressionOptions.isVerbose() ? "ON" : "OFF").append('\n');
-                compressionReport.append("CompressFromMipmapLevel: ").append(compressionOptions.getCompressFromMipmapLevel()).append('\n');
+                compressionReport.append("Codebook cache folder: ").append(baseCompressionOptions.getCodebookCacheFolder()).append('\n');
+                compressionReport.append("Verbose mode: ").append(baseCompressionOptions.isVerbose() ? "ON" : "OFF").append('\n');
+                compressionReport.append("Worker count: ").append(baseCompressionOptions.getWorkerCount()).append('\n');
+                compressionReport.append("CompressFromMipmapLevel: ").append(baseCompressionOptions.getCompressFromMipmapLevel()).append(
+                        '\n');
                 compressionReport.append("\u001b[0m");
 
                 System.out.println(compressionReport.toString());
@@ -385,26 +431,39 @@ public class BigDataServer {
 
                 for (final String str : lines) {
                     final String[] tokens = str.split("\\s*\\t\\s*");
-                    if (tokens.length == 2 && StringUtils.isNotEmpty(tokens[0].trim()) && StringUtils.isNotEmpty(tokens[1].trim())) {
+
+                    if (tokens.length >= 2 && StringUtils.isNotEmpty(tokens[0].trim()) && StringUtils.isNotEmpty(tokens[1].trim())) {
                         final String name = tokens[0].trim();
-                        final String xmlpath = tokens[1].trim();
-                        tryAddDataset(datasets, name, xmlpath);
+                        final String xmlPath = tokens[1].trim();
+
+                        final ExtendedCompressionOptions datasetCompressionOptions = baseCompressionOptions.copyRequiredParams();
+                        if (tokens.length == 3 && StringUtils.isNotEmpty(tokens[2].trim())) {
+                            if (tokens[2].trim().equals("tcb")) {
+                                datasetCompressionOptions.setEnableCodebookTraining(true);
+                            }
+                        }
+
+                        tryAddDataset(datasets, name, xmlPath, (enableQcmpCompression ? datasetCompressionOptions : null));
                     } else {
                         LOG.warn("Invalid dataset file line (will be skipped): {" + str + "}");
                     }
                 }
             }
 
-            // process additional {name, name.xml} pairs given on the
-            // command-line
+            // process additional {name, name.xml, [`tcb`]} pair or triplets given on the command-line
             final String[] leftoverArgs = cmd.getArgs();
-            if (leftoverArgs.length % 2 != 0)
-                throw new IllegalArgumentException("Dataset list has an error while processing.");
 
-            for (int i = 0; i < leftoverArgs.length; i += 2) {
-                final String name = leftoverArgs[i];
-                final String xmlpath = leftoverArgs[i + 1];
-                tryAddDataset(datasets, name, xmlpath);
+            for (int i = 0; i < leftoverArgs.length; ) {
+                final String name = leftoverArgs[i++];
+                final String xmlPath = leftoverArgs[i++];
+
+                final ExtendedCompressionOptions datasetCompressionOptions = baseCompressionOptions.copyRequiredParams();
+                if ((i < leftoverArgs.length) && leftoverArgs[i].equals("tcb")) {
+                    datasetCompressionOptions.setEnableCodebookTraining(true);
+                    i++;
+                }
+
+                tryAddDataset(datasets, name, xmlPath, (enableQcmpCompression ? datasetCompressionOptions : null));
             }
 
             if (datasets.isEmpty())
@@ -416,7 +475,7 @@ public class BigDataServer {
                                   thumbnailDirectory,
                                   baseUrl,
                                   enableManagerContext,
-                                  enableQcmpCompression ? compressionOptions : null);
+                                  enableQcmpCompression ? baseCompressionOptions : null);
         } catch (final ParseException | IllegalArgumentException e) {
             LOG.warn(e.getMessage());
             System.out.println();
@@ -439,18 +498,21 @@ public class BigDataServer {
         return null;
     }
 
-    private static void tryAddDataset(final HashMap<String, String> datasetNameToXML,
+    private static void tryAddDataset(final HashMap<String, BigDataServerDataset> datasetNameToXML,
                                       final String name,
-                                      final String xmlpath) throws IllegalArgumentException {
+                                      final String xmlPath,
+                                      final ExtendedCompressionOptions extendedCompressionOptions) throws IllegalArgumentException {
         for (final String reserved : Constants.RESERVED_CONTEXT_NAMES)
             if (name.equals(reserved))
                 throw new IllegalArgumentException("Cannot use dataset name: \"" + name + "\" (reserved for internal use).");
         if (datasetNameToXML.containsKey(name))
             throw new IllegalArgumentException("Duplicate dataset name: \"" + name + "\"");
-        if (Files.notExists(Paths.get(xmlpath)))
-            throw new IllegalArgumentException("Dataset file does not exist: \"" + xmlpath + "\"");
-        datasetNameToXML.put(name, xmlpath);
-        LOG.info("Dataset added: {" + name + ", " + xmlpath + "}");
+        if (Files.notExists(Paths.get(xmlPath)))
+            throw new IllegalArgumentException("Dataset file does not exist: \"" + xmlPath + "\"");
+
+        datasetNameToXML.put(name, new BigDataServerDataset(xmlPath, extendedCompressionOptions));
+        LOG.info("Dataset added: {" + name + ", " + xmlPath +
+                         ", QcmpDatasetTraining: " + ((extendedCompressionOptions.isCodebookTrainingEnabled()) ? "ON" : "OFF") + "}");
     }
 
     private static String getThumbnailDirectoryPath(final Parameters params) throws IOException {
@@ -480,19 +542,19 @@ public class BigDataServer {
     }
 
     private static ContextHandlerCollection createHandlers(final String baseURL,
-                                                           final Map<String, String> dataSet,
-                                                           final String thumbnailsDirectoryName,
-                                                           final ExtendedCompressionOptions compressionOps) throws SpimDataException,
-            IOException {
+                                                           final Map<String, BigDataServerDataset> dataSet,
+                                                           final String thumbnailsDirectoryName)
+            throws SpimDataException, IOException {
         final ContextHandlerCollection handlers = new ContextHandlerCollection();
 
-        for (final Entry<String, String> entry : dataSet.entrySet()) {
+        for (final Entry<String, BigDataServerDataset> entry : dataSet.entrySet()) {
+
             final String name = entry.getKey();
-            final String xmlpath = entry.getValue();
+            final String xmlPath = entry.getValue().getXmlFile();
             final String context = "/" + name;
-            final CellHandler ctx = new CellHandler(baseURL + context + "/", xmlpath,
+            final CellHandler ctx = new CellHandler(baseURL + context + "/", xmlPath,
                                                     name, thumbnailsDirectoryName,
-                                                    compressionOps);
+                                                    entry.getValue().getCompressionOptions());
             ctx.setContextPath(context);
             handlers.addHandler(ctx);
         }
