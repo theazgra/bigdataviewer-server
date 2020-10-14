@@ -158,6 +158,7 @@ public class CellHandler extends ContextHandler {
      */
     private final BigDataServer.ExtendedCompressionOptions compressionParams;
 
+    private boolean compressionSupport = false;
     private ArrayList<ICacheFile> cachedCodebooks = null;
     private HashMap<Integer, ImageCompressor> compressors = null;
     private ImageCompressor lowestResCompressor = null;
@@ -242,7 +243,8 @@ public class CellHandler extends ContextHandler {
                     return;
                 }
             } else {
-                LOG.warn("Didn't find any cached codebooks for " + this.baseFilename);
+                LOG.warn("Didn't find any cached codebooks for " + this.baseFilename + " and codebook training is not enabled. " +
+                                 "Enable with 'tcb' after xml file path.");
                 return;
             }
         }
@@ -276,15 +278,20 @@ public class CellHandler extends ContextHandler {
         for (int i = 0; i < initialCompressionCacheSize; i++) {
             cachedBuffers.push(new MemoryOutputStream(INITIAL_BUFFER_SIZE));
         }
+        compressionSupport = true;
+    }
+
+    public boolean isCompressionSupported() {
+        return compressionSupport;
     }
 
     private boolean trainCompressionCodebooks(final BigDataServer.ExtendedCompressionOptions compressionOptions,
                                               final Hdf5ImageLoader hdf5ImageLoader) {
 
         final ArrayImg<?, ?> arrImg = (ArrayImg<?, ?>) hdf5ImageLoader.getSetupImgLoader(0).getImage(0, 0, ImgLoaderHints.LOAD_COMPLETELY);
-        assert (arrImg.numDimensions() == 3);
-
+        assert (arrImg.numDimensions() == 3) : "arrImg.numDimensions() != 3";
         assert (compressionOptions.getInputDataInfo().getCacheFileName().equals(baseFilename));
+
 
         final CallbackInputData cid = new CallbackInputData((x, y, z) ->
                                                             {

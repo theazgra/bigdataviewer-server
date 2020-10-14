@@ -6,6 +6,7 @@ import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.handler.ContextHandler;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
+
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
@@ -84,6 +85,8 @@ public class JsonDatasetListHandler extends ContextHandler
 				writer.name( "thumbnailUrl" ).value( contextHandler.getThumbnailUrl() );
 
 				writer.name( "datasetUrl" ).value( contextHandler.getDataSetURL() );
+
+				writer.name("qcmpSupported").value(contextHandler.isCompressionSupported());
 
 				writer.endObject();
 			}
