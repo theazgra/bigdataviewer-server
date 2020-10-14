@@ -12,7 +12,7 @@
 
     <groupId>sc.fiji</groupId>
     <artifactId>bigdataviewer-server</artifactId>
-    <version>3.0.1-SNAPSHOT</version>
+    <version>3.0.1-QCMP-SNAPSHOT</version>
 
     <name>BigDataServer</name>
     <description>A web server for BigDataViewer datasets.</description>
