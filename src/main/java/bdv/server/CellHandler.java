@@ -505,7 +505,9 @@ public class CellHandler extends ContextHandler {
             for (final ICacheFile cacheFile : cachedCodebooks) {
                 cacheFile.writeToStream(dos);
             }
+            LOG.info(String.format("init_qcmp responding with %d bytes", dos.size()));
         } // Stream gets closed here.
+
         response.setContentType("application/octet-stream");
         response.setStatus(HttpServletResponse.SC_OK);
         baseRequest.setHandled(true);
