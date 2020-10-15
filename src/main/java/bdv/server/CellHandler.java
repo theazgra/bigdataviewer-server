@@ -51,7 +51,9 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Stack;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class CellHandler extends ContextHandler {
     private static final org.eclipse.jetty.util.log.Logger LOG = Log.getLogger(CellHandler.class);
@@ -168,6 +170,8 @@ public class CellHandler extends ContextHandler {
 
     private final AtomicInteger compressedAccumulation = new AtomicInteger(0);
     private final AtomicInteger uncompressedAccumulation = new AtomicInteger(0);
+    private final AtomicInteger qcmpCellResponseCount = new AtomicInteger(0);
+    private final AtomicLong compressionTimeAccumulation = new AtomicLong(0);
 
 
     public CellHandler(final String baseUrl,
@@ -264,6 +268,8 @@ public class CellHandler extends ContextHandler {
             compressorOptions.setBitsPerCodebookIndex(bitsPerCodebookIndex);
 
             final ImageCompressor compressor = new ImageCompressor(compressorOptions, levelCacheFile);
+            //            compressor.allowKdTreeVectorLookup();
+
             final int actualKey = compressorIndex + compressionParams.getCompressFromMipmapLevel();
             compressors.put(actualKey, compressor);
             LOG.info(String.format("  Loaded codebook of size %d for mipmap level %d. '%s'",
@@ -399,7 +405,6 @@ public class CellHandler extends ContextHandler {
             response.setStatus(HttpServletResponse.SC_OK);
             baseRequest.setHandled(true);
         } else if (parts[0].equals("cell_qcmp")) {
-            final Stopwatch stopwatch = Stopwatch.startNew();
             final int mipmapLevel = Integer.parseInt(parts[4]);
             final int[] cellDims = new int[]{Integer.parseInt(parts[5]), Integer.parseInt(parts[6]), Integer.parseInt(parts[7])};
 
@@ -409,8 +414,13 @@ public class CellHandler extends ContextHandler {
             final FlatBufferInputData inputData = createInputDataObject(data, cellDims);
             final MemoryOutputStream cellCompressionStream = getCachedCompressionBuffer();
 
+            final Stopwatch compressionStopwatch = Stopwatch.startNew();
+
             final int compressedContentLength = getCompressorForMipmapLevel(mipmapLevel).streamCompressChunk(cellCompressionStream,
                                                                                                              inputData);
+            compressionStopwatch.stop();
+            compressionTimeAccumulation.addAndGet(compressionStopwatch.getElapsedInUnit(TimeUnit.NANOSECONDS));
+            qcmpCellResponseCount.incrementAndGet();
 
             response.setContentLength(compressedContentLength);
             try (final OutputStream responseStream = response.getOutputStream()) {
@@ -431,19 +441,17 @@ public class CellHandler extends ContextHandler {
             response.setStatus(HttpServletResponse.SC_OK);
             baseRequest.setHandled(true);
             returnBufferForReuse(cellCompressionStream);
-            stopwatch.stop();
 
             final long currentlySent = compressedAccumulation.addAndGet(compressedContentLength);
             final long uncompressedWouldSent = uncompressedAccumulation.addAndGet(data.length * 2);
 
             if (compressionParams.isVerbose()) {
 
-                LOG.info(String.format("Sending %dB instead of %dB. Currently sent %dB instead of %dB. Handler finished in %s",
+                LOG.info(String.format("Sending %dB instead of %dB. Currently sent %dB instead of %dB.",
                                        compressedContentLength,
                                        (data.length * 2),
                                        currentlySent,
-                                       uncompressedWouldSent,
-                                       stopwatch.getElapsedTimeString()));
+                                       uncompressedWouldSent));
 
             }
         } else if (parts[0].equals("init")) {
@@ -458,6 +466,11 @@ public class CellHandler extends ContextHandler {
     private void respondWithCompressionSummary(final Request baseRequest, final HttpServletResponse response) throws IOException {
         final long currentlySent = compressedAccumulation.get();
         final long uncompressedWouldSent = uncompressedAccumulation.get();
+        final int qcmpRequestCount = qcmpCellResponseCount.get();
+        final long accumulatedNs = compressionTimeAccumulation.get();
+
+        final long totalRequestTimeMs = TimeUnit.MILLISECONDS.convert(accumulatedNs, TimeUnit.NANOSECONDS);
+        final long averageTimePerRequestMs = (long) ((double) totalRequestTimeMs / (double) qcmpRequestCount);
 
         final double sentKB = ((double) currentlySent / 1000.0);
         final double sentMB = ((double) currentlySent / 1000.0) / 1000.0;
@@ -465,10 +478,13 @@ public class CellHandler extends ContextHandler {
         final double wouldSentMB = ((double) uncompressedWouldSent / 1000.0) / 1000.0;
         final double percentage = (double) currentlySent / (double) uncompressedWouldSent;
 
+        final String msg = String.format("Currently sent %d B (%.1f KB, %.1f MB) instead of %d B (%.1f KB, %.1f MB).\nPercentage: %.3f\n" +
+                                                 "Total compression time: %d ms, Average time per request: %d ms",
+                                         currentlySent, sentKB, sentMB, uncompressedWouldSent, wouldSentKB, wouldSentMB, percentage,
+                                         totalRequestTimeMs, averageTimePerRequestMs);
 
         respondWithString(baseRequest, response, "text/plain",
-                          String.format("Currently sent %d B (%.1f KB, %.1f MB) instead of %d B (%.1f KB, %.1f MB).\nPercentage: %.3f",
-                                        currentlySent, sentKB, sentMB, uncompressedWouldSent, wouldSentKB, wouldSentMB, percentage),
+                          msg,
                           HttpServletResponse.SC_OK);
 
     }
