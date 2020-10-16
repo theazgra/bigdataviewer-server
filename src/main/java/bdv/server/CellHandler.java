@@ -268,7 +268,6 @@ public class CellHandler extends ContextHandler {
             compressorOptions.setBitsPerCodebookIndex(bitsPerCodebookIndex);
 
             final ImageCompressor compressor = new ImageCompressor(compressorOptions, levelCacheFile);
-            //            compressor.allowKdTreeVectorLookup();
 
             final int actualKey = compressorIndex + compressionParams.getCompressFromMipmapLevel();
             compressors.put(actualKey, compressor);
@@ -293,6 +292,7 @@ public class CellHandler extends ContextHandler {
 
     private boolean trainCompressionCodebooks(final BigDataServer.ExtendedCompressionOptions compressionOptions,
                                               final Hdf5ImageLoader hdf5ImageLoader) {
+        LOG.info("Training compression codebooks for dataset: " + baseFilename);
 
         final ArrayImg<?, ?> arrImg = (ArrayImg<?, ?>) hdf5ImageLoader.getSetupImgLoader(0).getImage(0, 0, ImgLoaderHints.LOAD_COMPLETELY);
         assert (arrImg.numDimensions() == 3) : "arrImg.numDimensions() != 3";
@@ -313,13 +313,12 @@ public class CellHandler extends ContextHandler {
         compressionOptions.setVerbose(true);
         compressionOptions.setInputDataInfo(cid);
 
-
         final ImageCompressor trainingCompressor = new ImageCompressor(compressionOptions);
         final boolean result = trainingCompressor.trainAndSaveAllCodebooks();
 
         compressionOptions.setInputDataInfo(originalInputData);
         compressionOptions.setVerbose(originalVerbose);
-
+        LOG.info("Training completed");
         return result;
     }
 
