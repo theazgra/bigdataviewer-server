@@ -398,6 +398,8 @@ public class CellHandler extends ContextHandler {
 
             final int level = Integer.parseInt(parts[4]);
             final short[] data = getCachedVolatileCellData(parts, level);
+            compressedAccumulation.addAndGet(data.length * 2);
+            uncompressedAccumulation.addAndGet(data.length * 2);
             respondWithShortArray(response, data);
 
             response.setContentType("application/octet-stream");
