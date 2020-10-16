@@ -363,7 +363,11 @@ public class BigDataServer {
                     } else {
                         final Optional<V3i> maybeV3 = ParseUtils.tryParseV3i(vqValue, 'x');
                         if (maybeV3.isPresent()) {
-                            baseCompressionOptions.setQuantizationType(QuantizationType.Vector3D);
+                            if (maybeV3.get().getZ() == 1) { // Actually it is 2D quantization!
+                                baseCompressionOptions.setQuantizationType(QuantizationType.Vector2D);
+                            } else {
+                                baseCompressionOptions.setQuantizationType(QuantizationType.Vector3D);
+                            }
                             baseCompressionOptions.setQuantizationVector(maybeV3.get());
                         }
                     }
